@@ -16,15 +16,16 @@ import (
 
 // Schema is a minimal OpenAPI 3.0 schema object.
 type Schema struct {
-	Type        string             `json:"type,omitempty"`
-	Format      string             `json:"format,omitempty"`
-	Properties  map[string]*Schema `json:"properties,omitempty"`
-	Items       *Schema            `json:"items,omitempty"`
-	Required    []string           `json:"required,omitempty"`
-	Description string             `json:"description,omitempty"`
-	Minimum     *float64           `json:"minimum,omitempty"`
-	Maximum     *float64           `json:"maximum,omitempty"`
-	Enum        []string           `json:"enum,omitempty"`
+	Type                 string             `json:"type,omitempty"`
+	Format               string             `json:"format,omitempty"`
+	Properties           map[string]*Schema `json:"properties,omitempty"`
+	Items                *Schema            `json:"items,omitempty"`
+	Required             []string           `json:"required,omitempty"`
+	Description          string             `json:"description,omitempty"`
+	Minimum              *float64           `json:"minimum,omitempty"`
+	Maximum              *float64           `json:"maximum,omitempty"`
+	Enum                 []string           `json:"enum,omitempty"`
+	AdditionalProperties *Schema            `json:"additionalProperties,omitempty"`
 }
 
 // Constraint narrows a descriptor: it validates at request time (violations
@@ -213,6 +214,12 @@ func (a *App) Doc(info Info) OpenAPIDoc {
 		op.Responses["400"] = &Response{Description: "Bad request"}
 		op.Responses["404"] = &Response{Description: "Not found"}
 		op.Responses["500"] = &Response{Description: "Internal server error"}
+		// Declared responses override the defaults.
+		if ex, ok := r.outMeta.(interface{ ExtraResponses() map[string]*Response }); ok {
+			for k, v := range ex.ExtraResponses() {
+				op.Responses[k] = v
+			}
+		}
 
 		doc.Paths[r.path][method] = op
 	}
@@ -225,8 +232,19 @@ type responseSchemer interface {
 }
 
 // schemaOfType maps a Go type to an OpenAPI schema. Called at document build
-// time (startup), never on the request path.
+// time (startup), never on the request path. Recursive types are truncated:
+// the type currently being descended into yields an empty schema, so
+// self-referential documents (e.g. the OpenAPI doc itself) terminate.
 func schemaOfType(t reflect.Type) *Schema {
+	return schemaOfTypeSeen(t, map[reflect.Type]bool{})
+}
+
+func schemaOfTypeSeen(t reflect.Type, seen map[reflect.Type]bool) *Schema {
+	if seen[t] {
+		return &Schema{}
+	}
+	seen[t] = true
+	defer delete(seen, t)
 	switch t.Kind() {
 	case reflect.String:
 		return &Schema{Type: "string"}
@@ -241,9 +259,11 @@ func schemaOfType(t reflect.Type) *Schema {
 	case reflect.Float64:
 		return &Schema{Type: "number", Format: "double"}
 	case reflect.Pointer:
-		return schemaOfType(t.Elem())
+		return schemaOfTypeSeen(t.Elem(), seen)
 	case reflect.Slice:
-		return &Schema{Type: "array", Items: schemaOfType(t.Elem())}
+		return &Schema{Type: "array", Items: schemaOfTypeSeen(t.Elem(), seen)}
+	case reflect.Map:
+		return &Schema{Type: "object", AdditionalProperties: schemaOfTypeSeen(t.Elem(), seen)}
 	case reflect.Struct:
 		s := &Schema{Type: "object", Properties: map[string]*Schema{}}
 		for i := 0; i < t.NumField(); i++ {
@@ -269,7 +289,7 @@ func schemaOfType(t reflect.Type) *Schema {
 			} else {
 				name = strings.ToLower(name)
 			}
-			s.Properties[name] = schemaOfType(f.Type)
+			s.Properties[name] = schemaOfTypeSeen(f.Type, seen)
 			if !omit {
 				s.Required = append(s.Required, name)
 			}

@@ -45,6 +45,9 @@ app.Must(web.Handle(
 | 输入契约 | `web.PathInt64/PathString/PathBool(name)`、`QueryInt/QueryIntDefault/QueryString`、`HeaderString(name)`、`BodyJSON[T]()`、`NoIn()` |
 | 描述器约束 | `web.Min(v)/Max(v)/Enum(vals...)` 变参挂在描述器上：运行时违规→400，schema 同步（三合一） |
 | 自定义元数据 | `web.InFuncMeta(fn, meta)`：自建描述器自报 OpenAPI 元数据 |
+| 请求体校验 | `web.BodyJSON[T](validate...)`：显式校验函数，失败→400 且客户端可见原因（无 tag） |
+| 流式输出 | `web.Stream(contentType)`：O = `func(io.Writer) error`，SSE/分块/长轮询的显式契约 |
+| 声明式错误响应 | `web.Docs(renderer, map[string]*Response)`：给 OpenAPI 声明 404 等语义，运行时不变 |
 | 万能输入 | `web.InFunc(func(r web.Req) (I, error))` —— 任意组合、任意参数个数，100 参数=一个结构体 |
 | 输入组合 | `web.All(a, b)` → `In[Pair[A,B]]`；`web.All3(a, b, c)` → `In[Triple[A,B,C]]`；错误短路 |
 | 输出契约 | `web.JSON[T]() / Text() / Status(code, inner) / NoContent[O]() / Redirect[O](code, url)` + 自定义 `Renderer[O]` |

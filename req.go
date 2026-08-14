@@ -113,6 +113,19 @@ func (q QueryAccessor) Int(name string) (int, error) {
 	return strconv.Atoi(v)
 }
 
+// Bool parses a query value as bool.
+func (q QueryAccessor) Bool(name string) (bool, error) {
+	v := q.String(name)
+	if v == "" {
+		return false, fmt.Errorf("web: query parameter %q is missing", name)
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("web: query parameter %q: %w", name, err)
+	}
+	return b, nil
+}
+
 // IntDefault parses a query value as int, falling back to def when absent
 // or invalid.
 func (q QueryAccessor) IntDefault(name string, def int) int {

@@ -64,5 +64,8 @@ app.Must(web.PutJSON("/users/{id}",
   内置描述器自动携带参数/请求体元数据，`All/All3` 组合元数据自动合并；
   类型 schema 仅在文档构建时内省一次（启动期），请求路径依旧零反射；
   深化：描述器约束 `Min/Max/Enum`（运行时 400 + schema 同步）、
-  `HeaderString` 描述器、`InFuncMeta` 自定义元数据。
+  `HeaderString` 描述器、`InFuncMeta` 自定义元数据；
+  M3.2 输出与校验深化：`BodyJSON[T](validate...)` 显式校验钩子（400 携带原因）、
+  `Stream(ct)` 流式输出契约（SSE/分块）、`Docs(rd, extras)` 声明式错误响应、
+  `PathFloat64`/`QueryBool` 描述器、map 类型 schema、递归类型内省守卫。
 - **M4**：可选代码生成加速器（已无反射，非性能需求，降级为可选）。

@@ -3,6 +3,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -40,7 +43,12 @@ func main() {
 	// ── 彻底版：0 变体，连 None 都不用写 ─────────────────────────
 	app.Must(
 		w.GetText0("/v2/hello", func() (string, error) { return "hello, world", nil }),
-		w.CreatedJSON("/v2/users", w.BodyJSON[user](), func(u user) (user, error) {
+		w.CreatedJSON("/v2/users", w.BodyJSON[user](func(u user) error {
+			if u.Name == "" {
+				return errors.New("name is required")
+			}
+			return nil
+		}), func(u user) (user, error) {
 			users[u.ID] = u
 			return u, nil
 		}),
@@ -71,6 +79,25 @@ func main() {
 			return &u, nil
 		}),
 	)
+
+	// ── BodyJSON 显式校验：校验器错误 → 400，客户端看到原因 ───────
+	// （并入上方 /v2/users 的 CreatedJSON 路由）
+
+	// ── 流式输出契约：SSE ─────────────────────────────────────
+	app.Must(w.Handle(w.Get("/v2/stream"), w.NoIn(), w.Stream("text/event-stream"),
+		func(w.None) (func(io.Writer) error, error) {
+			return func(wr io.Writer) error {
+				for i := 1; i <= 3; i++ {
+					if _, err := fmt.Fprintf(wr, "data: tick %d\n\n", i); err != nil {
+						return err
+					}
+					if f, ok := wr.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				return nil
+			}, nil
+		}))
 
 	// ── 描述器约束：解析 + 校验 + 文档三合一 ─────────────────────
 	app.Must(w.GetJSON("/v2/items", w.QueryInt("page", w.Min(1)),

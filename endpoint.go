@@ -171,6 +171,43 @@ func PathBool(name string) In[bool] {
 	}
 }
 
+// PathFloat64 declares one float64 path parameter as the input contract.
+func PathFloat64(name string, cs ...Constraint) In[float64] {
+	return inFunc[float64]{
+		fn: func(r Req) (float64, error) {
+			v, err := r.Path().Float64(name)
+			if err != nil {
+				return 0, httperr.BadRequest(err)
+			}
+			if err := checkConstraints(name, v, cs); err != nil {
+				return 0, err
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "path", Required: true,
+			Schema: applyConstraints(&Schema{Type: "number", Format: "double"}, cs),
+		}}},
+	}
+}
+
+// QueryBool declares one bool query parameter as the input contract.
+func QueryBool(name string) In[bool] {
+	return inFunc[bool]{
+		fn: func(r Req) (bool, error) {
+			v, err := r.Query().Bool(name)
+			if err != nil {
+				return false, httperr.BadRequest(err)
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "query",
+			Schema: &Schema{Type: "boolean"},
+		}}},
+	}
+}
+
 // QueryInt declares one int query parameter as the input contract.
 func QueryInt(name string, cs ...Constraint) In[int] {
 	return inFunc[int]{
@@ -226,13 +263,21 @@ func QueryString(name string, cs ...Constraint) In[string] {
 }
 
 // BodyJSON declares the request body, decoded as T, as the input contract.
-// Decode failures are automatically mapped to 400.
-func BodyJSON[T any]() In[T] {
+// Decode failures are automatically mapped to 400. Optional validators run
+// after decoding, in order: a validator error becomes a 400 whose message is
+// the validator's own — the client sees the reason. Explicit functions, no
+// struct tags.
+func BodyJSON[T any](validate ...func(T) error) In[T] {
 	return inFunc[T]{
 		fn: func(r Req) (T, error) {
 			v, err := DecodeBody[T](r)
 			if err != nil {
 				return v, httperr.BadRequest(err)
+			}
+			for _, vf := range validate {
+				if err := vf(v); err != nil {
+					return v, httperr.New(http.StatusBadRequest, err.Error())
+				}
 			}
 			return v, nil
 		},

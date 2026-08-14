@@ -108,6 +108,37 @@ func (r redirectRenderer[O]) SetHeader(h http.Header) {
 	h.Set("Location", r.url)
 }
 
+// Stream renders O = func(io.Writer) error by invoking it against the
+// response writer: streaming responses (SSE, chunked, long-poll) as an
+// explicit output contract. The writer implements http.Flusher on real
+// servers — assert it for event streams. The handler decides what to write
+// and when to stop; errors abort the response.
+func Stream(ct string) Renderer[func(io.Writer) error] { return streamRenderer{ct: ct} }
+
+type streamRenderer struct{ ct string }
+
+func (s streamRenderer) ContentType() string { return s.ct }
+func (s streamRenderer) StatusCode() int     { return http.StatusOK }
+func (s streamRenderer) WriteBody(w io.Writer, v func(io.Writer) error) error {
+	return v(w)
+}
+
+// Docs attaches extra OpenAPI responses to a renderer (e.g. declaring the
+// 404 semantics of a GET endpoint). Runtime behavior is unchanged.
+func Docs[O any](r Renderer[O], extras map[string]*Response) Renderer[O] {
+	return docRenderer[O]{inner: r, extras: extras}
+}
+
+type docRenderer[O any] struct {
+	inner  Renderer[O]
+	extras map[string]*Response
+}
+
+func (d docRenderer[O]) ContentType() string                  { return d.inner.ContentType() }
+func (d docRenderer[O]) StatusCode() int                      { return d.inner.StatusCode() }
+func (d docRenderer[O]) WriteBody(w io.Writer, v O) error     { return d.inner.WriteBody(w, v) }
+func (d docRenderer[O]) ExtraResponses() map[string]*Response { return d.extras }
+
 // Error response writers shared with middleware and the app.
 
 func writeJSONError(c *Ctx, code int, msg string) {
