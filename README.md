@@ -62,6 +62,10 @@ app.Must(web.Handle(
 | 中间件电池 | `RequestID`（类型键+响应头）、`Timeout(d)`、`BodyLimit(n)`、`CORS(cfg)`；预检用 `app.UseCORS(cfg)`（App 级应答，鉴权中间件不会拦预检） |
 | 响应头契约 | `web.WithHeader(rd, name, value)`：渲染时设置 + OpenAPI 同步（可链式） |
 | 单测助手 | `web.ServeRoute(route, req)` —— 路由即数据，一行测试一个端点 |
+| 中间件电池续 | `Compress()`（流式 gzip，免缓冲）、`RateLimit(rps, burst, key)`（令牌桶→429）、`CacheControl(s)`/`NoCache()` |
+| SSE 帮手 | `web.SSE()`：O = `func(*SSEWriter) error`，类型化 `Event().Data/Text` + `Ping()`，自动 flush |
+| 嵌套分组 | `g.Group(prefix, mws...)`：前缀与中间件组合 |
+| 路由元数据 | `route.Method()` / `route.Path()` |
 | OpenAPI | `app.Doc(web.Info{...})` 从挂载路由直接生成 3.0 文档；描述器自动携带参数/请求体/schema 元数据，挂一条 `/openapi.json` 路由即服务 |
 
 ## 性能（实测，AMD Ryzen 7 8845HS，Go 1.26，vs gin v1.10 同机）

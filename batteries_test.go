@@ -1,7 +1,9 @@
 package web_test
 
 import (
+	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -160,5 +162,114 @@ func TestServeRoute(t *testing.T) {
 	rec := web.ServeRoute(route, httptest.NewRequest("GET", "/users/42", nil))
 	if rec.Code != 200 || body(t, rec) != `{"id":42,"name":""}` {
 		t.Fatalf("%d %q", rec.Code, body(t, rec))
+	}
+}
+
+func TestCompressMiddleware(t *testing.T) {
+	app := web.New()
+	app.Use(web.Compress())
+	app.Must(web.GetText("/big", web.NoIn(),
+		func(web.None) (string, error) { return strings.Repeat("hello ", 100), nil }))
+
+	req := httptest.NewRequest("GET", "/big", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("not gzipped: %q", rec.Header().Get("Content-Encoding"))
+	}
+	gz, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(gz)
+	if !strings.HasPrefix(string(raw), "hello hello") {
+		t.Fatalf("bad content: %q", string(raw)[:20])
+	}
+	// 无 Accept-Encoding → 原样
+	if rec2 := do(t, app, "GET", "/big"); rec2.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("unexpected gzip: %q", rec2.Header().Get("Content-Encoding"))
+	}
+}
+
+func TestRateLimitMiddleware(t *testing.T) {
+	app := web.New()
+	app.Use(web.RateLimit(100, 2, nil)) // 每秒 100、桶容量 2：前两个立刻放行，第三个 429
+	app.Must(web.GetText("/x", web.NoIn(), func(web.None) (string, error) { return "ok", nil }))
+	req := httptest.NewRequest("GET", "/x", nil)
+	codes := []int{}
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		app.ServeHTTP(rec, req)
+		codes = append(codes, rec.Code)
+	}
+	if codes[0] != 200 || codes[1] != 200 || codes[2] != 429 {
+		t.Fatalf("codes = %v, want [200 200 429]", codes)
+	}
+}
+
+func TestCacheHeaders(t *testing.T) {
+	app := web.New()
+	app.Must(web.GetText("/c", web.NoIn(), func(web.None) (string, error) { return "x", nil }).
+		With(web.CacheControl(300)))
+	app.Must(web.GetText("/n", web.NoIn(), func(web.None) (string, error) { return "x", nil }).
+		With(web.NoCache()))
+	if rec := do(t, app, "GET", "/c"); rec.Header().Get("Cache-Control") != "public, max-age=300" {
+		t.Fatalf("%q", rec.Header().Get("Cache-Control"))
+	}
+	if rec := do(t, app, "GET", "/n"); rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("%q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestSSEHelper(t *testing.T) {
+	app := web.New()
+	app.Must(web.Handle(web.Get("/events"), web.NoIn(), web.SSE(),
+		func(web.None) (func(*web.SSEWriter) error, error) {
+			return func(s *web.SSEWriter) error {
+				if err := s.Event("update").Data(map[string]int{"n": 1}); err != nil {
+					return err
+				}
+				return s.Ping()
+			}, nil
+		}))
+	rec := do(t, app, "GET", "/events")
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("%d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	if b := body(t, rec); !strings.Contains(b, "event: update\n") || !strings.Contains(b, `data: {"n":1}`) || !strings.Contains(b, ": ping") {
+		t.Fatalf("bad SSE output: %q", b)
+	}
+}
+
+func TestNestedGroupAndAccessors(t *testing.T) {
+	app := web.New()
+	var events []string
+	v1 := app.Group("/api", func(next web.Handler) web.Handler {
+		return func(c *web.Ctx) error {
+			events = append(events, "api")
+			return next(c)
+		}
+	})
+	users := v1.Group("/users", func(next web.Handler) web.Handler {
+		return func(c *web.Ctx) error {
+			events = append(events, "users")
+			return next(c)
+		}
+	})
+	users.Must(web.GetJSON("/{id}", web.PathInt64("id"),
+		func(id int64) (*user, error) { return &user{ID: id}, nil }))
+
+	if rec := do(t, app, "GET", "/api/users/7"); body(t, rec) != `{"id":7,"name":""}` {
+		t.Fatalf("nested group: %q", body(t, rec))
+	}
+	if len(events) != 2 || events[0] != "api" || events[1] != "users" {
+		t.Fatalf("middleware order: %v", events)
+	}
+
+	// 路由元数据访问器
+	route := web.GetJSON("/meta", web.NoIn(), func(web.None) (*user, error) { return nil, nil })
+	if route.Method() != "GET" || route.Path() != "/meta" {
+		t.Fatalf("%s %s", route.Method(), route.Path())
 	}
 }

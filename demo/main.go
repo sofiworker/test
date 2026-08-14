@@ -4,8 +4,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 
@@ -25,7 +23,7 @@ var users = map[int64]user{
 func main() {
 	app := w.New()
 	var requestID = w.NewKey[string]("request-id")
-	app.Use(w.RequestID(requestID, w.NewID), w.Logger(log.Default()))
+	app.Use(w.RequestID(requestID, w.NewID), w.Compress(), w.Logger(log.Default()))
 	app.UseCORS(w.CORSConfig{
 		AllowOrigins: []string{"*"},
 		AllowMethods: []string{"GET", "POST", "PUT"},
@@ -89,19 +87,16 @@ func main() {
 	// ── BodyJSON 显式校验：校验器错误 → 400，客户端看到原因 ───────
 	// （并入上方 /v2/users 的 CreatedJSON 路由）
 
-	// ── 流式输出契约：SSE ─────────────────────────────────────
-	app.Must(w.Handle(w.Get("/v2/stream"), w.NoIn(), w.Stream("text/event-stream"),
-		func(w.None) (func(io.Writer) error, error) {
-			return func(wr io.Writer) error {
+	// ── 流式输出契约：SSE 帮手（类型化事件写入器）──────────────
+	app.Must(w.Handle(w.Get("/v2/stream"), w.NoIn(), w.SSE(),
+		func(w.None) (func(*w.SSEWriter) error, error) {
+			return func(s *w.SSEWriter) error {
 				for i := 1; i <= 3; i++ {
-					if _, err := fmt.Fprintf(wr, "data: tick %d\n\n", i); err != nil {
+					if err := s.Event("tick").Data(map[string]int{"n": i}); err != nil {
 						return err
 					}
-					if f, ok := wr.(http.Flusher); ok {
-						f.Flush()
-					}
 				}
-				return nil
+				return s.Ping()
 			}, nil
 		}))
 

@@ -1,14 +1,20 @@
 package web
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"time"
+
+	"example.com/web/httperr"
 )
 
 // Recover converts handler panics into a 500 response with the stack trace
@@ -130,4 +136,102 @@ func allowOrigin(cfg CORSConfig, origin string) string {
 		}
 	}
 	return ""
+}
+
+// Compress gzips responses when the client accepts it, streaming: writes are
+// compressed on the fly and Content-Length is dropped. No buffering.
+func Compress() Middleware {
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			if !strings.Contains(c.Req.Header.Get("Accept-Encoding"), "gzip") {
+				return next(c)
+			}
+			gz := gzipPool.Get().(*gzip.Writer)
+			gz.Reset(c.W)
+			c.Header().Set("Content-Encoding", "gzip")
+			c.Header().Del("Content-Length")
+			c.W = &gzipResponseWriter{ResponseWriter: c.W, gz: gz}
+			err := next(c)
+			_ = gz.Close()
+			gzipPool.Put(gz)
+			return err
+		}
+	}
+}
+
+var gzipPool = sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) { return w.gz.Write(b) }
+
+// Flush flushes the gzip stream if the underlying writer supports it.
+func (w *gzipResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		_ = w.gz.Flush()
+		f.Flush()
+	}
+}
+
+// CacheControl stamps Cache-Control: public, max-age=N.
+func CacheControl(maxAgeSeconds int) Middleware {
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			c.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", maxAgeSeconds))
+			return next(c)
+		}
+	}
+}
+
+// NoCache stamps Cache-Control: no-store.
+func NoCache() Middleware {
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			c.Header().Set("Cache-Control", "no-store")
+			return next(c)
+		}
+	}
+}
+
+// RateLimit caps requests with an in-memory token bucket per key (client IP
+// by default; key may be a header or any request-derived string). Exceeding
+// the limit yields 429. The bucket table is process-local and unbounded —
+// for horizontal scale or long-term retention, back this with external
+// storage instead.
+func RateLimit(rps float64, burst int, key func(*Ctx) string) Middleware {
+	if key == nil {
+		key = func(c *Ctx) string { return c.Req.RemoteAddr }
+	}
+	var mu sync.Mutex
+	buckets := map[string]*tokenBucket{}
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			k := key(c)
+			mu.Lock()
+			b := buckets[k]
+			if b == nil {
+				b = &tokenBucket{tokens: float64(burst)}
+				buckets[k] = b
+			}
+			now := time.Now()
+			elapsed := now.Sub(b.last).Seconds()
+			b.last = now
+			b.tokens = min(float64(burst), b.tokens+elapsed*rps)
+			if b.tokens < 1 {
+				mu.Unlock()
+				return httperr.TooManyRequests()
+			}
+			b.tokens--
+			mu.Unlock()
+			return next(c)
+		}
+	}
+}
+
+type tokenBucket struct {
+	last   time.Time
+	tokens float64
 }

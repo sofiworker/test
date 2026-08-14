@@ -355,6 +355,12 @@ type Route struct {
 	outMeta any
 }
 
+// Method returns the route's HTTP method.
+func (r *Route) Method() string { return r.method }
+
+// Path returns the route's path pattern.
+func (r *Route) Path() string { return r.path }
+
 // With returns a copy of the route wrapped with extra middleware. Route
 // middleware runs inside the app's global stack, in With order.
 func (r *Route) With(mws ...Middleware) *Route {

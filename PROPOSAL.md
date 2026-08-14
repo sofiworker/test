@@ -78,3 +78,12 @@ app.Must(web.PutJSON("/users/{id}",
   鉴权中间件不应拦截预检，这是架构级修正）；
 - `WithHeader(rd, k, v)`：响应头进入输出契约，渲染时设置 + OpenAPI response.headers 同步；
 - `ServeRoute(route, req)`：路由单测一行化。
+
+### M3.4 生产级中间件与流式深化（已完成）
+
+- `Compress()`：流式 gzip（Accept-Encoding 探测、免缓冲、Content-Length 剔除、Flusher 透传）；
+- `RateLimit(rps, burst, key)`：进程内令牌桶，超限 429（文档注明横向扩展需外置存储）；
+- `CacheControl(s)` / `NoCache()`：缓存头；
+- `web.SSE()`：类型化事件写入器（`Event().Data/Text`、`Ping()`、自动 flush），取代裸 Stream 的样板；
+- 嵌套 `Group.Group(prefix, mws...)`：前缀与中间件组合；
+- `Route.Method()/Path()`：路由元数据访问器。

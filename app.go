@@ -127,6 +127,18 @@ func (g *Group) Must(routes ...*Route) {
 	}
 }
 
+// Group nests a group under this one: prefixes and middleware compose.
+func (g *Group) Group(prefix string, mws ...Middleware) *Group {
+	if prefix != "" && !strings.HasPrefix(prefix, "/") {
+		panic("web: group prefix must start with '/'")
+	}
+	return &Group{
+		app:    g.app,
+		prefix: g.prefix + prefix,
+		mw:     append(append([]Middleware(nil), g.mw...), mws...),
+	}
+}
+
 func must(err error) {
 	if err != nil {
 		panic("web: " + err.Error())

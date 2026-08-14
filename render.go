@@ -2,9 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 )
 
 // Renderer describes how an output value O becomes an HTTP response: status,
@@ -170,6 +172,81 @@ func (h headerRenderer[O]) ResponseHeaders() map[string]string {
 	}
 	m[h.name] = h.value
 	return m
+}
+
+// SSE renders O = func(*SSEWriter) error as a text/event-stream: a typed
+// event writer for server-sent events.
+func SSE() Renderer[func(*SSEWriter) error] { return sseRenderer{} }
+
+type sseRenderer struct{}
+
+func (sseRenderer) ContentType() string { return "text/event-stream" }
+func (sseRenderer) StatusCode() int     { return http.StatusOK }
+func (sseRenderer) WriteBody(w io.Writer, v func(*SSEWriter) error) error {
+	var f http.Flusher
+	if fl, ok := w.(http.Flusher); ok {
+		f = fl
+	}
+	return v(&SSEWriter{w: w, f: f})
+}
+
+// SSEWriter writes server-sent events and flushes when the writer supports
+// it.
+type SSEWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (s *SSEWriter) flush() {
+	if s.f != nil {
+		s.f.Flush()
+	}
+}
+
+// Event starts a named event; chain Data/Text/Retry on the returned value.
+func (s *SSEWriter) Event(name string) *SSEEvent { return &SSEEvent{w: s, name: name} }
+
+// Ping sends a keep-alive comment.
+func (s *SSEWriter) Ping() error {
+	if _, err := io.WriteString(s.w, ": ping\n\n"); err != nil {
+		return err
+	}
+	s.flush()
+	return nil
+}
+
+// SSEEvent is one server-sent event under construction.
+type SSEEvent struct {
+	w    *SSEWriter
+	name string
+}
+
+// Data sends v as JSON in a data: line and flushes.
+func (e *SSEEvent) Data(v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return e.send(string(b))
+}
+
+// Text sends s verbatim in a data: line and flushes.
+func (e *SSEEvent) Text(s string) error { return e.send(s) }
+
+func (e *SSEEvent) send(data string) error {
+	var buf strings.Builder
+	if e.name != "" {
+		fmt.Fprintf(&buf, "event: %s\n", e.name)
+	}
+	for _, line := range strings.Split(data, "\n") {
+		fmt.Fprintf(&buf, "data: %s\n", line)
+	}
+	buf.WriteString("\n")
+	if _, err := io.WriteString(e.w.w, buf.String()); err != nil {
+		return err
+	}
+	e.w.flush()
+	return nil
 }
 
 // Error response writers shared with middleware and the app.
