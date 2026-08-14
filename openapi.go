@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"example.com/web/httperr"
 )
 
 // OpenAPI 3.0 generation from mounted routes. Because endpoints are data —
@@ -20,6 +22,98 @@ type Schema struct {
 	Items       *Schema            `json:"items,omitempty"`
 	Required    []string           `json:"required,omitempty"`
 	Description string             `json:"description,omitempty"`
+	Minimum     *float64           `json:"minimum,omitempty"`
+	Maximum     *float64           `json:"maximum,omitempty"`
+	Enum        []string           `json:"enum,omitempty"`
+}
+
+// Constraint narrows a descriptor: it validates at request time (violations
+// become 400) and mirrors itself into the OpenAPI schema. Constraints are
+// explicit — no struct tags, no hidden rules.
+type Constraint struct {
+	min  *float64
+	max  *float64
+	enum []string
+}
+
+// Min requires numeric inputs to be >= v.
+func Min(v float64) Constraint { return Constraint{min: &v} }
+
+// Max requires numeric inputs to be <= v.
+func Max(v float64) Constraint { return Constraint{max: &v} }
+
+// Enum restricts string inputs to the listed values.
+func Enum(vals ...string) Constraint { return Constraint{enum: vals} }
+
+// applyConstraints mirrors constraints into a schema.
+func applyConstraints(s *Schema, cs []Constraint) *Schema {
+	for _, c := range cs {
+		if c.min != nil {
+			s.Minimum = c.min
+		}
+		if c.max != nil {
+			s.Maximum = c.max
+		}
+		if len(c.enum) > 0 {
+			s.Enum = c.enum
+		}
+	}
+	return s
+}
+
+// checkConstraints validates a parsed value against constraints, mapping
+// violations to 400.
+func checkConstraints(name string, v any, cs []Constraint) error {
+	for _, c := range cs {
+		if err := c.check(name, v); err != nil {
+			return httperr.BadRequest(err)
+		}
+	}
+	return nil
+}
+
+func (c Constraint) check(name string, v any) error {
+	if c.min != nil || c.max != nil {
+		if f, ok := toFloat(v); ok {
+			if c.min != nil && f < *c.min {
+				return fmt.Errorf("web: parameter %q: %v is below minimum %v", name, v, *c.min)
+			}
+			if c.max != nil && f > *c.max {
+				return fmt.Errorf("web: parameter %q: %v is above maximum %v", name, v, *c.max)
+			}
+		}
+	}
+	if len(c.enum) > 0 {
+		if s, ok := v.(string); ok {
+			for _, e := range c.enum {
+				if s == e {
+					return nil
+				}
+			}
+			return fmt.Errorf("web: parameter %q: %q is not one of %v", name, s, c.enum)
+		}
+	}
+	return nil
+}
+
+func toFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case int:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case uint:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	case float32:
+		return float64(x), true
+	case float64:
+		return x, true
+	}
+	return 0, false
 }
 
 // Parameter is a path/query/header parameter description.

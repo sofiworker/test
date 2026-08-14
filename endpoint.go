@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
 
@@ -80,6 +81,30 @@ type opMetaCarrier struct{ m OpMeta }
 
 func (c opMetaCarrier) Describe() OpMeta { return c.m }
 
+// InFuncMeta is InFunc with explicit OpenAPI metadata: custom descriptors
+// document themselves.
+func InFuncMeta[I any](fn func(Req) (I, error), meta OpMeta) In[I] {
+	return inFunc[I]{fn: fn, meta: meta}
+}
+
+// HeaderString declares one required request header as the input contract.
+// A missing header is a 400; check Authorization separately if 401 is wanted.
+func HeaderString(name string) In[string] {
+	return inFunc[string]{
+		fn: func(r Req) (string, error) {
+			v := r.Header().Get(name)
+			if v == "" {
+				return "", httperr.BadRequest(fmt.Errorf("web: header %q is missing", name))
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "header", Required: true,
+			Schema: &Schema{Type: "string"},
+		}}},
+	}
+}
+
 // None is the input type of endpoints that take no input.
 type None struct{}
 
@@ -90,35 +115,41 @@ func NoIn() In[None] {
 
 // PathInt64 declares one int64 path parameter as the input contract. Parse
 // failures are automatically mapped to 400.
-func PathInt64(name string) In[int64] {
+func PathInt64(name string, cs ...Constraint) In[int64] {
 	return inFunc[int64]{
 		fn: func(r Req) (int64, error) {
 			v, err := r.Path().Int64(name)
 			if err != nil {
 				return 0, httperr.BadRequest(err)
 			}
+			if err := checkConstraints(name, v, cs); err != nil {
+				return 0, err
+			}
 			return v, nil
 		},
 		meta: OpMeta{Parameters: []*Parameter{{
 			Name: name, In: "path", Required: true,
-			Schema: &Schema{Type: "integer", Format: "int64"},
+			Schema: applyConstraints(&Schema{Type: "integer", Format: "int64"}, cs),
 		}}},
 	}
 }
 
 // PathString declares one string path parameter as the input contract.
-func PathString(name string) In[string] {
+func PathString(name string, cs ...Constraint) In[string] {
 	return inFunc[string]{
 		fn: func(r Req) (string, error) {
 			v, err := r.Path().String(name)
 			if err != nil {
 				return "", httperr.BadRequest(err)
 			}
+			if err := checkConstraints(name, v, cs); err != nil {
+				return "", err
+			}
 			return v, nil
 		},
 		meta: OpMeta{Parameters: []*Parameter{{
 			Name: name, In: "path", Required: true,
-			Schema: &Schema{Type: "string"},
+			Schema: applyConstraints(&Schema{Type: "string"}, cs),
 		}}},
 	}
 }
@@ -141,42 +172,55 @@ func PathBool(name string) In[bool] {
 }
 
 // QueryInt declares one int query parameter as the input contract.
-func QueryInt(name string) In[int] {
+func QueryInt(name string, cs ...Constraint) In[int] {
 	return inFunc[int]{
 		fn: func(r Req) (int, error) {
 			v, err := r.Query().Int(name)
 			if err != nil {
 				return 0, httperr.BadRequest(err)
 			}
+			if err := checkConstraints(name, v, cs); err != nil {
+				return 0, err
+			}
 			return v, nil
 		},
 		meta: OpMeta{Parameters: []*Parameter{{
 			Name: name, In: "query",
-			Schema: &Schema{Type: "integer"},
+			Schema: applyConstraints(&Schema{Type: "integer"}, cs),
 		}}},
 	}
 }
 
 // QueryIntDefault declares one int query parameter with a default value.
-func QueryIntDefault(name string, def int) In[int] {
+func QueryIntDefault(name string, def int, cs ...Constraint) In[int] {
 	return inFunc[int]{
 		fn: func(r Req) (int, error) {
-			return r.Query().IntDefault(name, def), nil
+			v := r.Query().IntDefault(name, def)
+			if err := checkConstraints(name, v, cs); err != nil {
+				return 0, err
+			}
+			return v, nil
 		},
 		meta: OpMeta{Parameters: []*Parameter{{
 			Name: name, In: "query",
-			Schema: &Schema{Type: "integer"},
+			Schema: applyConstraints(&Schema{Type: "integer"}, cs),
 		}}},
 	}
 }
 
 // QueryString declares one string query parameter as the input contract.
-func QueryString(name string) In[string] {
+func QueryString(name string, cs ...Constraint) In[string] {
 	return inFunc[string]{
-		fn: func(r Req) (string, error) { return r.Query().String(name), nil },
+		fn: func(r Req) (string, error) {
+			v := r.Query().String(name)
+			if err := checkConstraints(name, v, cs); err != nil {
+				return "", err
+			}
+			return v, nil
+		},
 		meta: OpMeta{Parameters: []*Parameter{{
 			Name: name, In: "query",
-			Schema: &Schema{Type: "string"},
+			Schema: applyConstraints(&Schema{Type: "string"}, cs),
 		}}},
 	}
 }

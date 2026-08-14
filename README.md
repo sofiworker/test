@@ -42,7 +42,9 @@ app.Must(web.Handle(
 | 绑定逻辑 | `web.Handle(builder, in, out, handlerFn)` —— 扁平调用，类型全推断 |
 | 端点复用 | `web.WithIn(builder, in)` / `web.WithOut(endpoint, out)` 嵌套组合 → `contract.Handle(impl)` |
 | 注册层糖 | `web.GetJSON/PostJSON/PutJSON/PatchJSON/DeleteJSON/CreatedJSON`、`GetText/PostText`；0 变体 `GetJSON0/GetText0/...` |
-| 输入契约 | `web.PathInt64/PathString/PathBool(name)`、`QueryInt/QueryIntDefault/QueryString`、`BodyJSON[T]()`、`NoIn()` |
+| 输入契约 | `web.PathInt64/PathString/PathBool(name)`、`QueryInt/QueryIntDefault/QueryString`、`HeaderString(name)`、`BodyJSON[T]()`、`NoIn()` |
+| 描述器约束 | `web.Min(v)/Max(v)/Enum(vals...)` 变参挂在描述器上：运行时违规→400，schema 同步（三合一） |
+| 自定义元数据 | `web.InFuncMeta(fn, meta)`：自建描述器自报 OpenAPI 元数据 |
 | 万能输入 | `web.InFunc(func(r web.Req) (I, error))` —— 任意组合、任意参数个数，100 参数=一个结构体 |
 | 输入组合 | `web.All(a, b)` → `In[Pair[A,B]]`；`web.All3(a, b, c)` → `In[Triple[A,B,C]]`；错误短路 |
 | 输出契约 | `web.JSON[T]() / Text() / Status(code, inner) / NoContent[O]() / Redirect[O](code, url)` + 自定义 `Renderer[O]` |
