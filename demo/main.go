@@ -72,6 +72,11 @@ func main() {
 		}),
 	)
 
+	// ── OpenAPI：端点即数据，文档从路由表直接生成（零反射请求路径）────
+	app.Must(w.GetJSON0("/openapi.json", func() (w.OpenAPIDoc, error) {
+		return app.Doc(w.Info{Title: "demo API", Version: "1.0.0"}), nil
+	}))
+
 	log.Println("listening on :8091")
 	if err := http.ListenAndServe(":8091", app); err != nil {
 		log.Fatal(err)

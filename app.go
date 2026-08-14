@@ -30,6 +30,8 @@ type App struct {
 	tree *node
 	mw   []Middleware
 
+	routes []*Route // mounted routes, in order (OpenAPI generation)
+
 	ctxPool   sync.Pool
 	paramPool sync.Pool
 }
@@ -63,7 +65,11 @@ func (a *App) Mount(r *Route) error {
 	all := make([]Middleware, 0, len(a.mw)+len(r.mws))
 	all = append(all, a.mw...)
 	all = append(all, r.mws...)
-	return a.tree.insert(segs, chain(all, r.h), method)
+	if err := a.tree.insert(segs, chain(all, r.h), method); err != nil {
+		return err
+	}
+	a.routes = append(a.routes, r)
+	return nil
 }
 
 // Must mounts one or more Routes and panics on the first registration

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 )
 
 // Renderer describes how an output value O becomes an HTTP response: status,
@@ -39,6 +40,9 @@ type jsonRenderer[T any] struct{}
 
 func (jsonRenderer[T]) ContentType() string { return "application/json; charset=utf-8" }
 func (jsonRenderer[T]) StatusCode() int     { return http.StatusOK }
+func (jsonRenderer[T]) ResponseSchema() *Schema {
+	return schemaOfType(reflect.TypeOf((*T)(nil)).Elem())
+}
 func (jsonRenderer[T]) WriteBody(w io.Writer, v T) error {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -53,8 +57,9 @@ func Text() Renderer[string] { return textRenderer{} }
 
 type textRenderer struct{}
 
-func (textRenderer) ContentType() string { return "text/plain; charset=utf-8" }
-func (textRenderer) StatusCode() int     { return http.StatusOK }
+func (textRenderer) ContentType() string     { return "text/plain; charset=utf-8" }
+func (textRenderer) StatusCode() int         { return http.StatusOK }
+func (textRenderer) ResponseSchema() *Schema { return &Schema{Type: "string"} }
 func (textRenderer) WriteBody(w io.Writer, v string) error {
 	_, err := io.WriteString(w, v)
 	return err

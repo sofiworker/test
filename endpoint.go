@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"reflect"
 
 	"example.com/web/httperr"
 )
@@ -63,9 +64,21 @@ type In[I any] interface {
 // httperr.BadRequest (or any typed status) yourself, nothing is inferred.
 func InFunc[I any](fn func(Req) (I, error)) In[I] { return inFunc[I]{fn: fn} }
 
-type inFunc[I any] struct{ fn func(Req) (I, error) }
+type inFunc[I any] struct {
+	fn   func(Req) (I, error)
+	meta OpMeta
+}
 
 func (f inFunc[I]) build(c *Ctx) (I, error) { return f.fn(Req{c: c}) }
+
+// Describe returns the OpenAPI metadata of this descriptor. User-defined
+// InFunc descriptors carry none.
+func (f inFunc[I]) Describe() OpMeta { return f.meta }
+
+// opMetaCarrier lets an already-merged OpMeta flow through describeOf.
+type opMetaCarrier struct{ m OpMeta }
+
+func (c opMetaCarrier) Describe() OpMeta { return c.m }
 
 // None is the input type of endpoints that take no input.
 type None struct{}
@@ -78,70 +91,114 @@ func NoIn() In[None] {
 // PathInt64 declares one int64 path parameter as the input contract. Parse
 // failures are automatically mapped to 400.
 func PathInt64(name string) In[int64] {
-	return InFunc(func(r Req) (int64, error) {
-		v, err := r.Path().Int64(name)
-		if err != nil {
-			return 0, httperr.BadRequest(err)
-		}
-		return v, nil
-	})
+	return inFunc[int64]{
+		fn: func(r Req) (int64, error) {
+			v, err := r.Path().Int64(name)
+			if err != nil {
+				return 0, httperr.BadRequest(err)
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "path", Required: true,
+			Schema: &Schema{Type: "integer", Format: "int64"},
+		}}},
+	}
 }
 
 // PathString declares one string path parameter as the input contract.
 func PathString(name string) In[string] {
-	return InFunc(func(r Req) (string, error) {
-		v, err := r.Path().String(name)
-		if err != nil {
-			return "", httperr.BadRequest(err)
-		}
-		return v, nil
-	})
+	return inFunc[string]{
+		fn: func(r Req) (string, error) {
+			v, err := r.Path().String(name)
+			if err != nil {
+				return "", httperr.BadRequest(err)
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "path", Required: true,
+			Schema: &Schema{Type: "string"},
+		}}},
+	}
 }
 
 // PathBool declares one bool path parameter as the input contract.
 func PathBool(name string) In[bool] {
-	return InFunc(func(r Req) (bool, error) {
-		v, err := r.Path().Bool(name)
-		if err != nil {
-			return false, httperr.BadRequest(err)
-		}
-		return v, nil
-	})
+	return inFunc[bool]{
+		fn: func(r Req) (bool, error) {
+			v, err := r.Path().Bool(name)
+			if err != nil {
+				return false, httperr.BadRequest(err)
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "path", Required: true,
+			Schema: &Schema{Type: "boolean"},
+		}}},
+	}
 }
 
 // QueryInt declares one int query parameter as the input contract.
 func QueryInt(name string) In[int] {
-	return InFunc(func(r Req) (int, error) {
-		v, err := r.Query().Int(name)
-		if err != nil {
-			return 0, httperr.BadRequest(err)
-		}
-		return v, nil
-	})
+	return inFunc[int]{
+		fn: func(r Req) (int, error) {
+			v, err := r.Query().Int(name)
+			if err != nil {
+				return 0, httperr.BadRequest(err)
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "query",
+			Schema: &Schema{Type: "integer"},
+		}}},
+	}
 }
 
 // QueryIntDefault declares one int query parameter with a default value.
 func QueryIntDefault(name string, def int) In[int] {
-	return InFunc(func(r Req) (int, error) {
-		return r.Query().IntDefault(name, def), nil
-	})
+	return inFunc[int]{
+		fn: func(r Req) (int, error) {
+			return r.Query().IntDefault(name, def), nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "query",
+			Schema: &Schema{Type: "integer"},
+		}}},
+	}
 }
 
 // QueryString declares one string query parameter as the input contract.
 func QueryString(name string) In[string] {
-	return InFunc(func(r Req) (string, error) { return r.Query().String(name), nil })
+	return inFunc[string]{
+		fn: func(r Req) (string, error) { return r.Query().String(name), nil },
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "query",
+			Schema: &Schema{Type: "string"},
+		}}},
+	}
 }
 
 // BodyJSON declares the request body, decoded as T, as the input contract.
 // Decode failures are automatically mapped to 400.
 func BodyJSON[T any]() In[T] {
-	return InFunc(func(r Req) (T, error) {
-		v, err := DecodeBody[T](r)
-		if err != nil {
-			return v, httperr.BadRequest(err)
-		}
-		return v, nil
-	})
+	return inFunc[T]{
+		fn: func(r Req) (T, error) {
+			v, err := DecodeBody[T](r)
+			if err != nil {
+				return v, httperr.BadRequest(err)
+			}
+			return v, nil
+		},
+		meta: OpMeta{RequestBody: &RequestBody{
+			Required: true,
+			Content: map[string]*MediaType{
+				"application/json": {Schema: schemaOfType(reflect.TypeOf((*T)(nil)).Elem())},
+			},
+		}},
+	}
 }
 
 // Endpoint is a description with an input contract attached.
@@ -316,34 +373,64 @@ type Triple[A, B, C any] struct {
 // the first error short-circuits. Nest for more sources:
 // All(All(a, b), c) — or use All3.
 func All[A, B any](a In[A], b In[B]) In[Pair[A, B]] {
-	return InFunc(func(r Req) (Pair[A, B], error) {
-		va, err := a.build(r.c)
-		if err != nil {
-			return Pair[A, B]{}, err
-		}
-		vb, err := b.build(r.c)
-		if err != nil {
-			return Pair[A, B]{}, err
-		}
-		return Pair[A, B]{First: va, Second: vb}, nil
-	})
+	return inFunc[Pair[A, B]]{
+		fn: func(r Req) (Pair[A, B], error) {
+			va, err := a.build(r.c)
+			if err != nil {
+				return Pair[A, B]{}, err
+			}
+			vb, err := b.build(r.c)
+			if err != nil {
+				return Pair[A, B]{}, err
+			}
+			return Pair[A, B]{First: va, Second: vb}, nil
+		},
+		meta: mergeMeta(a, b),
+	}
+}
+
+// describeOf returns the OpenAPI metadata of a descriptor, or empty when it
+// carries none (user-defined InFunc descriptors).
+func describeOf(in any) OpMeta {
+	if d, ok := in.(Describe); ok {
+		return d.Describe()
+	}
+	return OpMeta{}
+}
+
+// mergeMeta merges the OpenAPI metadata of two input descriptors.
+func mergeMeta(a, b any) OpMeta {
+	ma, mb := describeOf(a), describeOf(b)
+	var m OpMeta
+	m.Parameters = append(append([]*Parameter(nil), ma.Parameters...), mb.Parameters...)
+	if ma.RequestBody != nil {
+		m.RequestBody = ma.RequestBody
+	} else if mb.RequestBody != nil {
+		m.RequestBody = mb.RequestBody
+	}
+	return m
 }
 
 // All3 composes three input descriptors into a Triple.
 func All3[A, B, C any](a In[A], b In[B], c In[C]) In[Triple[A, B, C]] {
-	return InFunc(func(r Req) (Triple[A, B, C], error) {
-		va, err := a.build(r.c)
-		if err != nil {
-			return Triple[A, B, C]{}, err
-		}
-		vb, err := b.build(r.c)
-		if err != nil {
-			return Triple[A, B, C]{}, err
-		}
-		vc, err := c.build(r.c)
-		if err != nil {
-			return Triple[A, B, C]{}, err
-		}
-		return Triple[A, B, C]{First: va, Second: vb, Third: vc}, nil
-	})
+	ab := mergeMeta(a, b)
+	meta := mergeMeta(opMetaCarrier{ab}, c)
+	return inFunc[Triple[A, B, C]]{
+		fn: func(r Req) (Triple[A, B, C], error) {
+			va, err := a.build(r.c)
+			if err != nil {
+				return Triple[A, B, C]{}, err
+			}
+			vb, err := b.build(r.c)
+			if err != nil {
+				return Triple[A, B, C]{}, err
+			}
+			vc, err := c.build(r.c)
+			if err != nil {
+				return Triple[A, B, C]{}, err
+			}
+			return Triple[A, B, C]{First: va, Second: vb, Third: vc}, nil
+		},
+		meta: meta,
+	}
 }

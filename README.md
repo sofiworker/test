@@ -53,6 +53,7 @@ app.Must(web.Handle(
 | 类型安全键 | `web.NewKey[T]("name")` → `key.Set(c, v)` / `key.Get(c)` |
 | 路由语法 | Go 1.22 风格 `{param}` 与 `{path...}`；冲突挂载期报错；自动 405/OPTIONS、HEAD→GET |
 | 逃生舱口 | `web.Raw(method, path, web.Handler)` —— 手写热路径/流式/协议升级 |
+| OpenAPI | `app.Doc(web.Info{...})` 从挂载路由直接生成 3.0 文档；描述器自动携带参数/请求体/schema 元数据，挂一条 `/openapi.json` 路由即服务 |
 
 ## 性能（实测，AMD Ryzen 7 8845HS，Go 1.26，vs gin v1.10 同机）
 
@@ -73,6 +74,7 @@ app.Must(web.Handle(
 
 ```
 endpoint.go   端点描述：Builder/In/描述器/Bound/Route/Handle/Raw + 注册层糖 + 输入组合
+openapi.go    OpenAPI 3.0 生成：schema 模型、描述器元数据、app.Doc()
 req.go        web.Req 只读访问器（Path/Query/DecodeBody/Context）
 render.go     Renderer[O] 渲染器与错误响应写入
 router.go     radix tree（段内前缀合并 + {param}/{path...}）
