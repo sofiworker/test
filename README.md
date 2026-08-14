@@ -58,6 +58,10 @@ app.Must(web.Handle(
 | 类型安全键 | `web.NewKey[T]("name")` → `key.Set(c, v)` / `key.Get(c)` |
 | 路由语法 | Go 1.22 风格 `{param}` 与 `{path...}`；冲突挂载期报错；自动 405/OPTIONS、HEAD→GET |
 | 逃生舱口 | `web.Raw(method, path, web.Handler)` —— 手写热路径/流式/协议升级 |
+| 标准库兼容 | `web.FromStd(h)` / `FromStdFunc(fn)` —— net/http 中间件一行适配；`web.Static(prefix, dir)` 静态文件 |
+| 中间件电池 | `RequestID`（类型键+响应头）、`Timeout(d)`、`BodyLimit(n)`、`CORS(cfg)`；预检用 `app.UseCORS(cfg)`（App 级应答，鉴权中间件不会拦预检） |
+| 响应头契约 | `web.WithHeader(rd, name, value)`：渲染时设置 + OpenAPI 同步（可链式） |
+| 单测助手 | `web.ServeRoute(route, req)` —— 路由即数据，一行测试一个端点 |
 | OpenAPI | `app.Doc(web.Info{...})` 从挂载路由直接生成 3.0 文档；描述器自动携带参数/请求体/schema 元数据，挂一条 `/openapi.json` 路由即服务 |
 
 ## 性能（实测，AMD Ryzen 7 8845HS，Go 1.26，vs gin v1.10 同机）

@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -31,6 +32,7 @@ type App struct {
 	mw   []Middleware
 
 	routes []*Route // mounted routes, in order (OpenAPI generation)
+	cors   *CORSConfig
 
 	ctxPool   sync.Pool
 	paramPool sync.Pool
@@ -49,6 +51,15 @@ func New() *App {
 // mounted after the call.
 func (a *App) Use(mws ...Middleware) {
 	a.mw = append(a.mw, mws...)
+}
+
+// UseCORS enables CORS end to end: it injects the stamping middleware and
+// answers preflight requests at the App level, before routing. Preflight
+// must live here — the router's automatic OPTIONS handling runs before any
+// middleware chain, and auth middleware must never block preflight.
+func (a *App) UseCORS(cfg CORSConfig) {
+	a.cors = &cfg
+	a.Use(CORS(cfg))
 }
 
 // Mount mounts a compiled Route, returning a descriptive error for invalid
@@ -144,6 +155,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case !ok || n.handlers == nil:
 		a.notFound(c)
+	case a.cors != nil && r.Method == http.MethodOptions &&
+		r.Header.Get("Access-Control-Request-Method") != "" && a.corsPreflight(c, n):
+		// preflight answered; nothing else to do
+		err = nil
 	default:
 		h := n.handlers[r.Method]
 		if h == nil && r.Method == http.MethodHead {
@@ -189,6 +204,31 @@ func (a *App) methodNotAllowed(c *Ctx, n *node) {
 func (a *App) autoOptions(c *Ctx, n *node) {
 	c.Header().Set("Allow", allowHeader(n.methods))
 	c.WriteHeader(http.StatusNoContent)
+}
+
+// corsPreflight answers a CORS preflight for an allowed origin: 204 with the
+// full header set. Returns false when the origin is not allowed, falling
+// back to the ordinary OPTIONS handling.
+func (a *App) corsPreflight(c *Ctx, n *node) bool {
+	cfg := a.cors
+	origin := c.Req.Header.Get("Origin")
+	if allowOrigin(*cfg, origin) == "" {
+		return false
+	}
+	ao := allowOrigin(*cfg, origin)
+	c.Header().Set("Access-Control-Allow-Origin", ao)
+	if cfg.AllowCredentials {
+		c.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+	c.Header().Set("Vary", "Origin")
+	c.Header().Set("Allow", allowHeader(n.methods))
+	c.Header().Set("Access-Control-Allow-Methods", strings.Join(cfg.AllowMethods, ", "))
+	c.Header().Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowHeaders, ", "))
+	if cfg.MaxAgeSeconds > 0 {
+		c.Header().Set("Access-Control-Max-Age", fmt.Sprint(cfg.MaxAgeSeconds))
+	}
+	c.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 func allowHeader(methods []string) string {

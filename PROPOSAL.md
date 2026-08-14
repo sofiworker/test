@@ -69,3 +69,12 @@ app.Must(web.PutJSON("/users/{id}",
   `Stream(ct)` 流式输出契约（SSE/分块）、`Docs(rd, extras)` 声明式错误响应、
   `PathFloat64`/`QueryBool` 描述器、map 类型 schema、递归类型内省守卫。
 - **M4**：可选代码生成加速器（已无反射，非性能需求，降级为可选）。
+
+### M3.3 工程化装备（已完成）
+
+- `FromStd/FromStdFunc`：net/http 生态一行适配；`Static(prefix, dir)` 静态文件；
+- 中间件电池：`RequestID`（类型键 + 响应头 + 透传入站 id）、`Timeout`、`BodyLimit`、
+  `CORS`（打标）+ `UseCORS`（预检在 App 级应答——路由器的自动 OPTIONS 先于中间件链，
+  鉴权中间件不应拦截预检，这是架构级修正）；
+- `WithHeader(rd, k, v)`：响应头进入输出契约，渲染时设置 + OpenAPI response.headers 同步；
+- `ServeRoute(route, req)`：路由单测一行化。

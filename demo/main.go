@@ -24,7 +24,13 @@ var users = map[int64]user{
 
 func main() {
 	app := w.New()
-	app.Use(w.Logger(log.Default()))
+	var requestID = w.NewKey[string]("request-id")
+	app.Use(w.RequestID(requestID, w.NewID), w.Logger(log.Default()))
+	app.UseCORS(w.CORSConfig{
+		AllowOrigins: []string{"*"},
+		AllowMethods: []string{"GET", "POST", "PUT"},
+		AllowHeaders: []string{"Content-Type"},
+	})
 
 	// ── 温和版：输出即入口，无输入用 NoIn + None ─────────────────
 	app.Must(

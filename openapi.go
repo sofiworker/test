@@ -150,10 +150,16 @@ type Describe interface {
 	Describe() OpMeta
 }
 
+// Header is one response header description.
+type Header struct {
+	Schema *Schema `json:"schema"`
+}
+
 // Response is one response description.
 type Response struct {
 	Description string                `json:"description"`
 	Content     map[string]*MediaType `json:"content,omitempty"`
+	Headers     map[string]*Header    `json:"headers,omitempty"`
 }
 
 // Operation is one method on one path.
@@ -201,6 +207,12 @@ func (a *App) Doc(info Info) OpenAPIDoc {
 			code = rd.StatusCode()
 		}
 		resp := &Response{Description: desc}
+		if hdrs, ok := r.outMeta.(interface{ ResponseHeaders() map[string]string }); ok {
+			resp.Headers = map[string]*Header{}
+			for k, v := range hdrs.ResponseHeaders() {
+				resp.Headers[k] = &Header{Schema: &Schema{Type: "string", Description: v}}
+			}
+		}
 		if s, ok := r.outMeta.(responseSchemer); ok {
 			if sch := s.ResponseSchema(); sch != nil {
 				ct := "application/json"

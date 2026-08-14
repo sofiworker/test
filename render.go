@@ -139,6 +139,39 @@ func (d docRenderer[O]) StatusCode() int                      { return d.inner.S
 func (d docRenderer[O]) WriteBody(w io.Writer, v O) error     { return d.inner.WriteBody(w, v) }
 func (d docRenderer[O]) ExtraResponses() map[string]*Response { return d.extras }
 
+// WithHeader attaches a response header to an output contract: it is set at
+// render time and declared in the OpenAPI document. Chain for more headers.
+func WithHeader[O any](r Renderer[O], name, value string) Renderer[O] {
+	return headerRenderer[O]{inner: r, name: name, value: value}
+}
+
+type headerRenderer[O any] struct {
+	inner       Renderer[O]
+	name, value string
+}
+
+func (h headerRenderer[O]) ContentType() string { return h.inner.ContentType() }
+func (h headerRenderer[O]) StatusCode() int     { return h.inner.StatusCode() }
+func (h headerRenderer[O]) WriteBody(w io.Writer, v O) error {
+	return h.inner.WriteBody(w, v)
+}
+func (h headerRenderer[O]) SetHeader(hh http.Header) {
+	if s, ok := any(h.inner).(headerSetter); ok {
+		s.SetHeader(hh)
+	}
+	hh.Set(h.name, h.value)
+}
+func (h headerRenderer[O]) ResponseHeaders() map[string]string {
+	m := map[string]string{}
+	if in, ok := any(h.inner).(interface{ ResponseHeaders() map[string]string }); ok {
+		for k, v := range in.ResponseHeaders() {
+			m[k] = v
+		}
+	}
+	m[h.name] = h.value
+	return m
+}
+
 // Error response writers shared with middleware and the app.
 
 func writeJSONError(c *Ctx, code int, msg string) {
