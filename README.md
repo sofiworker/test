@@ -52,6 +52,11 @@ app.Must(web.Handle(
 | 输入组合 | `web.All(a, b)` → `In[Pair[A,B]]`；`web.All3(a, b, c)` → `In[Triple[A,B,C]]`；错误短路 |
 | 输出契约 | `web.JSON[T]() / Text() / Status(code, inner) / NoContent[O]() / Redirect[O](code, url)` + 自定义 `Renderer[O]` |
 | JSON 引擎 | 默认 [goccy/go-json](https://github.com/goccy/go-json)；构建标签 `std_json`/`jsoniter`/`sonic` 切换（同 gin 机制） |
+| 错误信封 | 默认 `{"error":...}`；`app.UseProblemJSON()` 切 RFC 7807（typed fields 并入响应） |
+| 通配符路径 | `web.PathRest(name)`：`{name...}` 段的输入契约 |
+| 查询补全 | `QueryFloat64`（可带约束）、`QueryStrings`（多值数组） |
+| Cookie | 读：`r.Cookies().Get(name)`；写：`web.SetCookie(rd, cookie)` 输出契约包装（可链式） |
+| 文件上传 | `web.FormFile(name, maxBytes)` → `web.Upload{Name,Content,Size}` |
 | 请求访问器 | `web.Req`：`r.Path().Int64("id")`、`r.Query().Int("page")`、`r.Header().Get`、`web.DecodeBody[T](r)`、`r.Context()`、`r.Raw()`（逃生舱） |
 | 错误 | `httperr.New(code, msg).Wrap(err).With(k, v)`；handler/构造器返回错误即映射状态码 |
 | 中间件 | `func(next Handler) Handler` 显式高阶函数；`app.Use` 全局、`route.With` 路由级 |

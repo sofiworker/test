@@ -276,6 +276,49 @@ func writeText(c *Ctx, s string) error {
 	return err
 }
 
+// writeProblemError renders RFC 7807 problem+json with the typed error's
+// structured fields as extra members.
+func writeProblemError(c *Ctx, code int, detail string, fields map[string]any) {
+	m := map[string]any{
+		"type":   "about:blank",
+		"title":  http.StatusText(code),
+		"status": code,
+	}
+	if detail != "" {
+		m["detail"] = detail
+	}
+	for k, v := range fields {
+		m[k] = v
+	}
+	b, _ := jsonMarshal(m)
+	c.Header()["Content-Type"] = ctJSON
+	c.WriteHeader(code)
+	_, _ = c.W.Write(b)
+}
+
+// SetCookie attaches a Set-Cookie header to an output contract: set at
+// render time, chainable, and visible in the contract itself.
+func SetCookie[O any](r Renderer[O], ck *http.Cookie) Renderer[O] {
+	return cookieRenderer[O]{inner: r, cookie: ck}
+}
+
+type cookieRenderer[O any] struct {
+	inner  Renderer[O]
+	cookie *http.Cookie
+}
+
+func (c cookieRenderer[O]) ContentType() string { return c.inner.ContentType() }
+func (c cookieRenderer[O]) StatusCode() int     { return c.inner.StatusCode() }
+func (c cookieRenderer[O]) WriteBody(w io.Writer, v O) error {
+	return c.inner.WriteBody(w, v)
+}
+func (c cookieRenderer[O]) SetHeader(h http.Header) {
+	if s, ok := any(c.inner).(headerSetter); ok {
+		s.SetHeader(h)
+	}
+	h.Add("Set-Cookie", c.cookie.String())
+}
+
 // Error response writers shared with middleware and the app.
 
 func writeJSONError(c *Ctx, code int, msg string) {

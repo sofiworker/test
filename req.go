@@ -34,6 +34,21 @@ func (r Req) Path() PathAccessor { return PathAccessor{c: r.c} }
 // Query returns the query-string accessor.
 func (r Req) Query() QueryAccessor { return QueryAccessor{c: r.c} }
 
+// Cookies returns the cookie accessor.
+func (r Req) Cookies() CookiesAccessor { return CookiesAccessor{c: r.c} }
+
+// CookiesAccessor reads request cookies.
+type CookiesAccessor struct{ c *Ctx }
+
+// Get returns the named cookie value.
+func (k CookiesAccessor) Get(name string) (string, bool) {
+	ck, err := k.c.Req.Cookie(name)
+	if err != nil {
+		return "", false
+	}
+	return ck.Value, true
+}
+
 // PathAccessor parses route parameters by name.
 type PathAccessor struct{ c *Ctx }
 
@@ -124,6 +139,24 @@ func (q QueryAccessor) Bool(name string) (bool, error) {
 		return false, fmt.Errorf("web: query parameter %q: %w", name, err)
 	}
 	return b, nil
+}
+
+// Float64 parses a query value as float64.
+func (q QueryAccessor) Float64(name string) (float64, error) {
+	v := q.String(name)
+	if v == "" {
+		return 0, fmt.Errorf("web: query parameter %q is missing", name)
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("web: query parameter %q: %w", name, err)
+	}
+	return f, nil
+}
+
+// Strings returns all values of a repeated query parameter.
+func (q QueryAccessor) Strings(name string) []string {
+	return q.c.Req.URL.Query()[name]
 }
 
 // IntDefault parses a query value as int, falling back to def when absent

@@ -90,6 +90,16 @@ app.Must(web.PutJSON("/users/{id}",
 - 结果：静态 JSON 快 gin 27%、参数 JSON 快 21%、五中间件快 2%；
   文本慢 15%（gin 的 String 路径极瘦，字节数仍为 gin 的 1/3）。
 
+### M5 完整性收尾（已完成）
+
+- 错误模型：`app.UseProblemJSON()` 切换 RFC 7807 problem+json，httperr 的
+  `With(k,v)` 结构化字段作为额外成员并入响应；默认信封不变；
+- 通配符路径描述器 `PathRest(name)`；
+- Cookie：读访问器 `r.Cookies().Get(name)`、输出契约包装 `SetCookie(rd, ck)`；
+- 查询补全：`QueryFloat64`（带约束）、`QueryStrings`（多值数组，OpenAPI 数组 schema）；
+- 文件上传描述器 `FormFile(name, maxBytes)` → `Upload{Name, Content, Size}`，
+  multipart 解析错误自动 400。
+
 ### M3.4 生产级中间件与流式深化（已完成）
 
 - `Compress()`：流式 gzip（Accept-Encoding 探测、免缓冲、Content-Length 剔除、Flusher 透传）；

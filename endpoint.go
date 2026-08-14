@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 
@@ -260,6 +261,75 @@ func QueryString(name string, cs ...Constraint) In[string] {
 			Schema: applyConstraints(&Schema{Type: "string"}, cs),
 		}}},
 	}
+}
+
+// PathRest declares a catch-all ({name...}) segment as the input contract.
+func PathRest(name string) In[string] {
+	return inFunc[string]{
+		fn: func(r Req) (string, error) { return r.Path().String(name) },
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "path", Required: true,
+			Schema: &Schema{Type: "string"},
+		}}},
+	}
+}
+
+// QueryFloat64 declares one float64 query parameter as the input contract.
+func QueryFloat64(name string, cs ...Constraint) In[float64] {
+	return inFunc[float64]{
+		fn: func(r Req) (float64, error) {
+			v, err := r.Query().Float64(name)
+			if err != nil {
+				return 0, httperr.BadRequest(err)
+			}
+			if err := checkConstraints(name, v, cs); err != nil {
+				return 0, err
+			}
+			return v, nil
+		},
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "query",
+			Schema: applyConstraints(&Schema{Type: "number", Format: "double"}, cs),
+		}}},
+	}
+}
+
+// QueryStrings declares a repeated query parameter as the input contract.
+func QueryStrings(name string) In[[]string] {
+	return inFunc[[]string]{
+		fn: func(r Req) ([]string, error) { return r.Query().Strings(name), nil },
+		meta: OpMeta{Parameters: []*Parameter{{
+			Name: name, In: "query",
+			Schema: &Schema{Type: "array", Items: &Schema{Type: "string"}},
+		}}},
+	}
+}
+
+// Upload is one multipart file upload.
+type Upload struct {
+	Name    string // 原始文件名
+	Content []byte
+	Size    int64
+}
+
+// FormFile declares one multipart file upload as the input contract.
+// maxBytes caps the parsed multipart form.
+func FormFile(name string, maxBytes int64) In[Upload] {
+	return InFunc(func(r Req) (Upload, error) {
+		if err := r.c.Req.ParseMultipartForm(maxBytes); err != nil {
+			return Upload{}, httperr.BadRequest(err)
+		}
+		f, h, err := r.c.Req.FormFile(name)
+		if err != nil {
+			return Upload{}, httperr.BadRequest(err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			return Upload{}, httperr.BadRequest(err)
+		}
+		return Upload{Name: h.Filename, Content: b, Size: int64(len(b))}, nil
+	})
 }
 
 // BodyJSON declares the request body, decoded as T, as the input contract.

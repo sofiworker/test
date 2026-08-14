@@ -34,6 +34,8 @@ type App struct {
 	routes []*Route // mounted routes, in order (OpenAPI generation)
 	cors   *CORSConfig
 
+	problemJSON bool // RFC 7807 error envelope when enabled
+
 	ctxPool sync.Pool
 }
 
@@ -49,6 +51,11 @@ func New() *App {
 func (a *App) Use(mws ...Middleware) {
 	a.mw = append(a.mw, mws...)
 }
+
+// UseProblemJSON switches error responses to RFC 7807 problem+json:
+// {"type","title","status","detail", ...typed fields}. Off by default (the
+// plain {"error": msg} envelope stays the zero-config default).
+func (a *App) UseProblemJSON() { a.problemJSON = true }
 
 // UseCORS enables CORS end to end: it injects the stamping middleware and
 // answers preflight requests at the App level, before routing. Preflight
@@ -266,10 +273,16 @@ func (a *App) writeError(c *Ctx, err error) {
 	}
 	code, msg := http.StatusInternalServerError, "internal server error"
 	var he *httperr.Error
+	var fields map[string]any
 	if errors.As(err, &he) {
 		code, msg = he.StatusCode(), he.Message()
+		fields = he.Fields()
 	} else {
 		log.Printf("web: handler error: %v", err)
+	}
+	if a.problemJSON {
+		writeProblemError(c, code, msg, fields)
+		return
 	}
 	writeJSONError(c, code, msg)
 }

@@ -57,6 +57,16 @@ func (e *Error) Wrap(err error) *Error {
 	return &n
 }
 
+// Fields returns the structured detail fields as a map (for problem+json
+// rendering and logging).
+func (e *Error) Fields() map[string]any {
+	m := make(map[string]any, len(e.fields))
+	for _, f := range e.fields {
+		m[f.key] = f.val
+	}
+	return m
+}
+
 // With returns a copy carrying one structured detail field.
 func (e *Error) With(key string, val any) *Error {
 	n := *e
