@@ -21,26 +21,53 @@ type node struct {
 	catch     *node // {name...} child (terminal)
 	catchName string
 
-	handlers map[string]Handler
-	methods  []string // sorted, for the Allow header
+	// leafHandlers 是切片而非 map：叶节点通常只有一两个方法，
+	// 热分派是线性扫描，零哈希成本（profile 中的 HashTrieMap.Load）。
+	leafHandlers []leafHandler
+	methods      []string // sorted, for the Allow header
+}
+
+// leafHandler is one method at one leaf.
+type leafHandler struct {
+	method string
+	h      Handler
 }
 
 func (n *node) addHandler(method string, h Handler) {
-	if n.handlers == nil {
-		n.handlers = make(map[string]Handler, 2)
+	for i := range n.leafHandlers {
+		if n.leafHandlers[i].method == method {
+			n.leafHandlers[i].h = h
+			return
+		}
 	}
-	n.handlers[method] = h
+	n.leafHandlers = append(n.leafHandlers, leafHandler{method: method, h: h})
+	sort.Slice(n.leafHandlers, func(i, j int) bool {
+		return n.leafHandlers[i].method < n.leafHandlers[j].method
+	})
 	n.methods = append(n.methods, method)
 	sort.Strings(n.methods)
 }
 
 func (n *node) leafInsert(method string, h Handler) error {
-	if n.handlers != nil {
-		if _, dup := n.handlers[method]; dup {
+	for _, lh := range n.leafHandlers {
+		if lh.method == method {
 			return fmt.Errorf("web: duplicate route for method %s", method)
 		}
 	}
 	n.addHandler(method, h)
+	return nil
+}
+
+// handlerFor returns the handler for a method, with HEAD falling back to GET.
+func (n *node) handlerFor(method string) Handler {
+	for _, lh := range n.leafHandlers {
+		if lh.method == method {
+			return lh.h
+		}
+	}
+	if method == "HEAD" {
+		return n.handlerFor("GET")
+	}
 	return nil
 }
 
@@ -103,18 +130,18 @@ func (n *node) insert(segs []string, h Handler, method string) error {
 		}
 		// Split c at l: the common part stays, the tail becomes a grandchild.
 		grand := &node{
-			prefix:    c.prefix[l:],
-			children:  c.children,
-			param:     c.param,
-			paramName: c.paramName,
-			catch:     c.catch,
-			catchName: c.catchName,
-			handlers:  c.handlers,
-			methods:   c.methods,
+			prefix:       c.prefix[l:],
+			children:     c.children,
+			param:        c.param,
+			paramName:    c.paramName,
+			catch:        c.catch,
+			catchName:    c.catchName,
+			leafHandlers: c.leafHandlers,
+			methods:      c.methods,
 		}
 		c.prefix = c.prefix[:l]
 		c.children = []*node{grand}
-		c.param, c.paramName, c.catch, c.catchName, c.handlers, c.methods = nil, "", nil, "", nil, nil
+		c.param, c.paramName, c.catch, c.catchName, c.leafHandlers, c.methods = nil, "", nil, "", nil, nil
 
 		rem := rest
 		if l < len(seg) {

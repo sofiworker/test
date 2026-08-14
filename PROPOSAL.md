@@ -79,6 +79,17 @@ app.Must(web.PutJSON("/users/{id}",
 - `WithHeader(rd, k, v)`：响应头进入输出契约，渲染时设置 + OpenAPI response.headers 同步；
 - `ServeRoute(route, req)`：路由单测一行化。
 
+### M4 性能收官（已完成）
+
+- 默认 JSON 引擎切换为 goccy/go-json（纯 Go、无汇编依赖），构建标签
+  `std_json`/`jsoniter`/`sonic` 保留（与 gin 的引擎切换机制一致；
+  sonic 需 avx+amd64 组合标签，Go 1.26 下上游暂不可用）；
+- profile 驱动三项框架侧优化：冻结响应头切片（跳过 Set 键规范化）、
+  糖入口直编闭包（跳过 Renderer 接口分派）、叶节点切片分派（跳过 map 查找）、
+  参数切片随 Ctx 单池；
+- 结果：静态 JSON 快 gin 27%、参数 JSON 快 21%、五中间件快 2%；
+  文本慢 15%（gin 的 String 路径极瘦，字节数仍为 gin 的 1/3）。
+
 ### M3.4 生产级中间件与流式深化（已完成）
 
 - `Compress()`：流式 gzip（Accept-Encoding 探测、免缓冲、Content-Length 剔除、Flusher 透传）；

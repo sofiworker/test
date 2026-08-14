@@ -51,6 +51,7 @@ app.Must(web.Handle(
 | 万能输入 | `web.InFunc(func(r web.Req) (I, error))` —— 任意组合、任意参数个数，100 参数=一个结构体 |
 | 输入组合 | `web.All(a, b)` → `In[Pair[A,B]]`；`web.All3(a, b, c)` → `In[Triple[A,B,C]]`；错误短路 |
 | 输出契约 | `web.JSON[T]() / Text() / Status(code, inner) / NoContent[O]() / Redirect[O](code, url)` + 自定义 `Renderer[O]` |
+| JSON 引擎 | 默认 [goccy/go-json](https://github.com/goccy/go-json)；构建标签 `std_json`/`jsoniter`/`sonic` 切换（同 gin 机制） |
 | 请求访问器 | `web.Req`：`r.Path().Int64("id")`、`r.Query().Int("page")`、`r.Header().Get`、`web.DecodeBody[T](r)`、`r.Context()`、`r.Raw()`（逃生舱） |
 | 错误 | `httperr.New(code, msg).Wrap(err).With(k, v)`；handler/构造器返回错误即映射状态码 |
 | 中间件 | `func(next Handler) Handler` 显式高阶函数；`app.Use` 全局、`route.With` 路由级 |
@@ -68,20 +69,23 @@ app.Must(web.Handle(
 | 路由元数据 | `route.Method()` / `route.Path()` |
 | OpenAPI | `app.Doc(web.Info{...})` 从挂载路由直接生成 3.0 文档；描述器自动携带参数/请求体/schema 元数据，挂一条 `/openapi.json` 路由即服务 |
 
-## 性能（实测，AMD Ryzen 7 8845HS，Go 1.26，vs gin v1.10 同机）
+## 性能（实测，AMD Ryzen 7 8845HS，Go 1.26，vs gin v1.10 同机，双方各自默认引擎）
 
 `cd benchmarks && go test -bench . -benchmem -benchtime=1s`：
 
-| 用例 | web | gin | 差距 |
+| 用例 | web | gin | 结果 |
 |---|---|---|---|
-| 静态文本 | 85.4 ns，16 B，1 alloc | 77.1 ns，48 B，1 alloc | +10.8%，字节 1/3 |
-| 静态 JSON | 200.3 ns，64 B，2 alloc | 185.0 ns，64 B，2 alloc | +8.3% |
-| 参数 JSON（含 int64 解析） | 229.0 ns，64 B，2 alloc | 206.0 ns，64 B，2 alloc | +11.2% |
-| 5 层中间件 | 94.8 ns，16 B，1 alloc | 89.8 ns，48 B，1 alloc | +5.6% |
-| 404 | 73.7 ns，16 B，1 alloc | 40.4 ns，0 B，0 alloc | 错误路径；gin 404 几乎不做事 |
+| 静态 JSON | 150.6 ns，64 B，2 alloc | 205.4 ns，64 B，2 alloc | **快 27%** |
+| 参数 JSON（含 int64 解析） | 183.4 ns，64 B，2 alloc | 233.0 ns，64 B，2 alloc | **快 21%** |
+| 5 层中间件 | 88.7 ns，16 B，1 alloc | 90.7 ns，48 B，1 alloc | 快 2% |
+| 静态文本 | 89.0 ns，16 B，1 alloc | 77.4 ns，48 B，1 alloc | 慢 15%，字节 1/3 |
+| 404 | 69.8 ns，16 B，1 alloc | 42.5 ns，0 B，0 alloc | 错误路径；gin 404 几乎不做事 |
 
-**零反射、零性能税**：所有签名同一条执行路径（build + handler + render 三次直接调用）。
-分配预算由 `alloc_test.go` 作为 CI 硬约束（文本 ≤1、参数 ≤1、JSON ≤2）。
+**零反射 + 引擎优势**：默认 JSON 引擎为 goccy/go-json（纯 Go、任何 Go 版本可用；
+构建标签 `std_json`/`jsoniter`/`sonic` 可切换，与 gin 的引擎切换同机制）。
+profile 驱动优化：冻结响应头切片（跳过 Set 规范化）、糖入口直编闭包（跳过渲染器
+接口分派）、叶节点切片分派（跳过 map 查找）、参数切片随 Ctx 单池。
+分配预算由 `alloc_test.go` 作为 CI 硬约束（文本 ≤1、参数 ≤1、JSON ≤3）。
 
 ## 布局
 

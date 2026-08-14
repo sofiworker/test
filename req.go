@@ -2,8 +2,8 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 )
@@ -136,9 +136,14 @@ func (q QueryAccessor) IntDefault(name string, def int) int {
 	return v
 }
 
-// DecodeBody decodes the request body into T.
+// DecodeBody decodes the request body into T through the JSON codec (same
+// engine as the renderers; BodyLimit caps the read).
 func DecodeBody[T any](r Req) (T, error) {
 	var v T
-	err := json.NewDecoder(r.c.Req.Body).Decode(&v)
+	b, err := io.ReadAll(r.c.Req.Body)
+	if err != nil {
+		return v, err
+	}
+	err = jsonUnmarshal(b, &v)
 	return v, err
 }

@@ -34,16 +34,13 @@ type App struct {
 	routes []*Route // mounted routes, in order (OpenAPI generation)
 	cors   *CORSConfig
 
-	ctxPool   sync.Pool
-	paramPool sync.Pool
+	ctxPool sync.Pool
 }
 
 // New creates an App.
 func New() *App {
 	a := &App{tree: &node{}}
-	a.ctxPool.New = func() any { return &Ctx{} }
-	// The pool holds *[]param so that Put never boxes a slice header.
-	a.paramPool.New = func() any { s := make([]param, 0, 8); return &s }
+	a.ctxPool.New = func() any { return &Ctx{params: make([]param, 0, 8)} }
 	return a
 }
 
@@ -151,8 +148,7 @@ func (a *App) Handler() http.Handler { return a }
 // ServeHTTP implements http.Handler.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := a.ctxPool.Get().(*Ctx)
-	pp := a.paramPool.Get().(*[]param)
-	ps := (*pp)[:0]
+	ps := c.params[:0]
 	c.reset(w, r, ps)
 
 	p := r.URL.Path
@@ -165,17 +161,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	switch {
-	case !ok || n.handlers == nil:
+	case !ok || len(n.leafHandlers) == 0:
 		a.notFound(c)
 	case a.cors != nil && r.Method == http.MethodOptions &&
 		r.Header.Get("Access-Control-Request-Method") != "" && a.corsPreflight(c, n):
 		// preflight answered; nothing else to do
 		err = nil
 	default:
-		h := n.handlers[r.Method]
-		if h == nil && r.Method == http.MethodHead {
-			h = n.handlers[http.MethodGet]
-		}
+		h := n.handlerFor(r.Method)
 		if h == nil {
 			if r.Method == http.MethodOptions {
 				a.autoOptions(c, n)
@@ -194,13 +187,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.WriteHeader(c.status)
 	}
 
-	// Release pooled resources. Cap the retained parameter capacity so a
+	// Release the pooled Ctx. Cap the retained parameter capacity so a
 	// single deep wildcard route cannot pin an ever-growing buffer.
-	if cap(c.params) <= 64 {
-		*pp = c.params[:0]
-		a.paramPool.Put(pp)
+	if cap(c.params) > 64 {
+		c.params = make([]param, 0, 8)
 	}
-	c.params = nil
 	a.ctxPool.Put(c)
 }
 

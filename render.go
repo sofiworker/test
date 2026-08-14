@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,7 +45,7 @@ func (jsonRenderer[T]) ResponseSchema() *Schema {
 	return schemaOfType(reflect.TypeOf((*T)(nil)).Elem())
 }
 func (jsonRenderer[T]) WriteBody(w io.Writer, v T) error {
-	b, err := json.Marshal(v)
+	b, err := jsonMarshal(v)
 	if err != nil {
 		return err
 	}
@@ -223,7 +222,7 @@ type SSEEvent struct {
 
 // Data sends v as JSON in a data: line and flushes.
 func (e *SSEEvent) Data(v any) error {
-	b, err := json.Marshal(v)
+	b, err := jsonMarshal(v)
 	if err != nil {
 		return err
 	}
@@ -249,10 +248,38 @@ func (e *SSEEvent) send(data string) error {
 	return nil
 }
 
+// 冻结的内容类型切片：热路径直接写入头 map，跳过 Set 的键校验与规范化
+// （profile 显示这是框架侧最大单点开销）。切片是共享的：替换条目可以，
+// 原地修改不行。
+var (
+	ctJSON = []string{"application/json; charset=utf-8"}
+	ctText = []string{"text/plain; charset=utf-8"}
+)
+
+// writeJSON is the direct JSON path: codec marshal + frozen header + write.
+func writeJSON(c *Ctx, v any) error {
+	b, err := jsonMarshal(v)
+	if err != nil {
+		return err
+	}
+	c.Header()["Content-Type"] = ctJSON
+	c.WriteHeader(c.status)
+	_, err = c.W.Write(b)
+	return err
+}
+
+// writeText is the direct text path: no renderer interface, no Set.
+func writeText(c *Ctx, s string) error {
+	c.Header()["Content-Type"] = ctText
+	c.WriteHeader(http.StatusOK)
+	_, err := io.WriteString(c.W, s)
+	return err
+}
+
 // Error response writers shared with middleware and the app.
 
 func writeJSONError(c *Ctx, code int, msg string) {
-	b, _ := json.Marshal(map[string]string{"error": msg})
+	b, _ := jsonMarshal(map[string]string{"error": msg})
 	c.Header().Set("Content-Type", "application/json; charset=utf-8")
 	c.WriteHeader(code)
 	_, _ = c.W.Write(b)

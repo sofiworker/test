@@ -381,71 +381,112 @@ func Raw(method, path string, h Handler) *Route {
 // handler 推断、渲染器由函数名显式声明。需要自定义渲染器或状态码时退回
 // web.Handle 全契约形式。
 
+// 糖入口直接编译闭包，不经过 Renderer 接口：热路径上没有接口分派、
+// 没有 ContentType/StatusCode 调用、没有逐请求的响应头规范化。
+// 自定义渲染器仍走 web.Handle。
+
+func jsonRoute[I, O any](method, path string, in In[I], fn func(I) (O, error), code int) *Route {
+	h := func(c *Ctx) error {
+		v, err := in.build(c)
+		if err != nil {
+			return err
+		}
+		o, err := fn(v)
+		if err != nil {
+			return err
+		}
+		b, err := jsonMarshal(o)
+		if err != nil {
+			return err
+		}
+		c.Header()["Content-Type"] = ctJSON
+		c.WriteHeader(code)
+		_, err = c.W.Write(b)
+		return err
+	}
+	return &Route{method: method, path: path, h: h, inMeta: in, outMeta: JSON[O]()}
+}
+
+func textRoute[I any](method, path string, in In[I], fn func(I) (string, error)) *Route {
+	h := func(c *Ctx) error {
+		v, err := in.build(c)
+		if err != nil {
+			return err
+		}
+		s, err := fn(v)
+		if err != nil {
+			return err
+		}
+		return writeText(c, s)
+	}
+	return &Route{method: method, path: path, h: h, inMeta: in, outMeta: Text()}
+}
+
 // GetJSON declares a GET endpoint rendering its output as JSON 200.
 func GetJSON[I, O any](path string, in In[I], fn func(I) (O, error)) *Route {
-	return Handle(Get(path), in, JSON[O](), fn)
+	return jsonRoute("GET", path, in, fn, http.StatusOK)
 }
 
 // PostJSON declares a POST endpoint rendering its output as JSON 200.
 func PostJSON[I, O any](path string, in In[I], fn func(I) (O, error)) *Route {
-	return Handle(Post(path), in, JSON[O](), fn)
+	return jsonRoute("POST", path, in, fn, http.StatusOK)
 }
 
 // PutJSON declares a PUT endpoint rendering its output as JSON 200.
 func PutJSON[I, O any](path string, in In[I], fn func(I) (O, error)) *Route {
-	return Handle(Put(path), in, JSON[O](), fn)
+	return jsonRoute("PUT", path, in, fn, http.StatusOK)
 }
 
 // PatchJSON declares a PATCH endpoint rendering its output as JSON 200.
 func PatchJSON[I, O any](path string, in In[I], fn func(I) (O, error)) *Route {
-	return Handle(Patch(path), in, JSON[O](), fn)
+	return jsonRoute("PATCH", path, in, fn, http.StatusOK)
 }
 
 // DeleteJSON declares a DELETE endpoint rendering its output as JSON 200.
 func DeleteJSON[I, O any](path string, in In[I], fn func(I) (O, error)) *Route {
-	return Handle(Delete(path), in, JSON[O](), fn)
+	return jsonRoute("DELETE", path, in, fn, http.StatusOK)
 }
 
 // CreatedJSON declares a POST endpoint rendering its output as JSON 201.
 func CreatedJSON[I, O any](path string, in In[I], fn func(I) (O, error)) *Route {
-	return Handle(Post(path), in, Status(http.StatusCreated, JSON[O]()), fn)
+	return jsonRoute("POST", path, in, fn, http.StatusCreated)
 }
 
 // GetText declares a GET endpoint rendering a string as text/plain 200.
 func GetText[I any](path string, in In[I], fn func(I) (string, error)) *Route {
-	return Handle(Get(path), in, Text(), fn)
+	return textRoute("GET", path, in, fn)
 }
 
 // PostText declares a POST endpoint rendering a string as text/plain 200.
 func PostText[I any](path string, in In[I], fn func(I) (string, error)) *Route {
-	return Handle(Post(path), in, Text(), fn)
+	return textRoute("POST", path, in, fn)
 }
 
 // ---- 无输入（0）变体：消除 web.None 样板。这是唯一的 0 特例，不是元数家族。----
 
 // GetJSON0 declares a GET endpoint with no input contract.
 func GetJSON0[O any](path string, fn func() (O, error)) *Route {
-	return Handle(Get(path), NoIn(), JSON[O](), func(_ None) (O, error) { return fn() })
+	return jsonRoute("GET", path, NoIn(), func(_ None) (O, error) { return fn() }, http.StatusOK)
 }
 
 // PostJSON0 declares a POST endpoint with no input contract.
 func PostJSON0[O any](path string, fn func() (O, error)) *Route {
-	return Handle(Post(path), NoIn(), JSON[O](), func(_ None) (O, error) { return fn() })
+	return jsonRoute("POST", path, NoIn(), func(_ None) (O, error) { return fn() }, http.StatusOK)
 }
 
 // CreatedJSON0 declares a POST endpoint with no input contract, status 201.
 func CreatedJSON0[O any](path string, fn func() (O, error)) *Route {
-	return Handle(Post(path), NoIn(), Status(http.StatusCreated, JSON[O]()), func(_ None) (O, error) { return fn() })
+	return jsonRoute("POST", path, NoIn(), func(_ None) (O, error) { return fn() }, http.StatusCreated)
 }
 
 // GetText0 declares a GET text endpoint with no input contract.
 func GetText0(path string, fn func() (string, error)) *Route {
-	return Handle(Get(path), NoIn(), Text(), func(_ None) (string, error) { return fn() })
+	return textRoute("GET", path, NoIn(), func(_ None) (string, error) { return fn() })
 }
 
 // PostText0 declares a POST text endpoint with no input contract.
 func PostText0(path string, fn func() (string, error)) *Route {
-	return Handle(Post(path), NoIn(), Text(), func(_ None) (string, error) { return fn() })
+	return textRoute("POST", path, NoIn(), func(_ None) (string, error) { return fn() })
 }
 
 // ---- 输入组合子：path + body 等任意来源的拼装（零反射，类型全显式）----
