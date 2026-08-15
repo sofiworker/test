@@ -1,3 +1,5 @@
+//go:build !std_json && !jsoniter && !(sonic && avx && (linux || windows || darwin) && amd64)
+
 package web
 
 // 默认 JSON 引擎：goccy/go-json —— 纯 Go、stdlib 兼容、无汇编依赖，

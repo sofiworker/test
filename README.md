@@ -107,6 +107,23 @@ profile 驱动优化：冻结响应头切片（跳过 Set 规范化）、糖入�
 来源：body 路径 gin 的 ShouldBindJSON 每请求反射 vs 本框架 goccy 直解码；
 错误路径得益于错误体缓存（同 code+msg 复用字节）。
 
+### 同引擎公平对照（双方 stdlib encoding/json，`-tags std_json`）
+
+剥离引擎差异后，纯框架设计对比：
+
+| 端点 | web | gin | 结果 |
+|---|---|---|---|
+| GET /tasks/{id} | 280 ns | 292 ns | 快 4% |
+| 404 | 263 ns，3 alloc | 607 ns，7 alloc | **快 57%** |
+| POST 创建 | 1265 ns，11 alloc | 1466 ns，13 alloc | 快 14% |
+| PUT 更新 | 1318 ns，11 alloc | 1571 ns，13 alloc | 快 16% |
+| done 409 | 255 ns，2 alloc | 645 ns，7 alloc | **快 60%** |
+| 401 | 182 ns，2 alloc | 576 ns，7 alloc | **快 68%** |
+| 分页列表 | 5194 ns | 4485 ns | 慢 16%（encode 密集，唯一劣势） |
+
+微基准同引擎：静态 JSON 慢 5.8%、参数 JSON 慢 11.1%、文本慢 2%（字节 1/3）、
+五中间件快 3%——"接近 gin"的承诺线，无水分。
+
 ## 布局
 
 ```

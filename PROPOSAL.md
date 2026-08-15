@@ -90,6 +90,13 @@ app.Must(web.PutJSON("/users/{id}",
 - 结果：静态 JSON 快 gin 27%、参数 JSON 快 21%、五中间件快 2%；
   文本慢 15%（gin 的 String 路径极瘦，字节数仍为 gin 的 1/3）。
 
+### M8 同引擎公平对照（已完成）
+
+`-tags std_json` 回退标准库后（双方同引擎），端点级 6/7 仍反超（4%–68%）：
+body 绑定与错误路径的优势是设计红利、与引擎无关；微基准 5–11% 框架开销
+是"接近 gin"承诺的无水分基线；goccy 默认引擎为纯增量（encode 密集路径
++5.8% → -27%）。修复：codec.go 补负向构建约束（-tags std_json 编译冲突）。
+
 ### M7 真实端点对照基准（已完成）
 
 `benchmarks/tasks_bench_test.go`：examples/tasks 的同一批端点（分页列表/读写/
