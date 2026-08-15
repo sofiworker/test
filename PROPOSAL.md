@@ -90,6 +90,17 @@ app.Must(web.PutJSON("/users/{id}",
 - 结果：静态 JSON 快 gin 27%、参数 JSON 快 21%、五中间件快 2%；
   文本慢 15%（gin 的 String 路径极瘦，字节数仍为 gin 的 1/3）。
 
+### M6 参考应用（已完成）
+
+`examples/tasks/`：完整参考应用，展示框架的最佳实践组合——
+- 资源组 + 组中间件（Bearer 鉴权、类型键）；路由级中间件 `.With(requireAuth)`；
+- 分页/过滤（InFunc 显式校验）、path+body 组合更新（`All`）、状态机 409、
+  204 删除、`BodyJSON` 校验钩子；
+- OpenAPI 文档即路由、RequestID/Recover/Timeout/Logger/CORS 电池、优雅停机；
+- 端到端测试覆盖生命周期/分页/鉴权/文档。
+- 用法要点：**组内根路由用空路径**（`GetJSON("")`，前缀拼接后才是完整路径，
+  避免尾斜杠禁令）。
+
 ### M5 完整性收尾（已完成）
 
 - 错误模型：`app.UseProblemJSON()` 切换 RFC 7807 problem+json，httperr 的

@@ -104,6 +104,7 @@ ctx.go        Ctx 池化、类型键
 app.go        App：Mount/Must/Group/ServeHTTP、405/OPTIONS/HEAD
 middleware.go Recover、Logger（报告错误映射后的有效状态码）
 httperr/      类型化 HTTP 错误
+examples/tasks/ 完整参考应用：CRUD + 鉴权 + 分页/过滤 + 状态机 + OpenAPI + 优雅停机 + 端到端测试
 demo/         最小 demo（两种注册风格 + 组合 + Group）
 examples/     完整示例
 benchmarks/   独立模块：vs gin、stdlib ServeMux
