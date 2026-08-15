@@ -90,6 +90,14 @@ app.Must(web.PutJSON("/users/{id}",
 - 结果：静态 JSON 快 gin 27%、参数 JSON 快 21%、五中间件快 2%；
   文本慢 15%（gin 的 String 路径极瘦，字节数仍为 gin 的 1/3）。
 
+### M7 真实端点对照基准（已完成）
+
+`benchmarks/tasks_bench_test.go`：examples/tasks 的同一批端点（分页列表/读写/
+组合更新/状态机/鉴权失败/404），web 与 gin 各自惯用写法、相同校验与状态码：
+7 个端点中 6 个 web 显著更快（20%–61%），分页列表打平。
+关键优化：错误体缓存（writeJSONError 按 code+msg 复用已序列化字节，
+错误路径 7 alloc → 2-3）。
+
 ### M6 参考应用（已完成）
 
 `examples/tasks/`：完整参考应用，展示框架的最佳实践组合——

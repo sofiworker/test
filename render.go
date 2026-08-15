@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 // Renderer describes how an output value O becomes an HTTP response: status,
@@ -321,9 +322,26 @@ func (c cookieRenderer[O]) SetHeader(h http.Header) {
 
 // Error response writers shared with middleware and the app.
 
+// errBodyCache reuses marshaled error bodies: the same (code, msg) pair
+// renders identically, so the hot error paths (404/401/409/500) allocate
+// nothing after the first occurrence.
+type errBodyKey struct {
+	code int
+	msg  string
+}
+
+var errBodyCache sync.Map
+
 func writeJSONError(c *Ctx, code int, msg string) {
-	b, _ := jsonMarshal(map[string]string{"error": msg})
-	c.Header().Set("Content-Type", "application/json; charset=utf-8")
+	key := errBodyKey{code: code, msg: msg}
+	var b []byte
+	if v, ok := errBodyCache.Load(key); ok {
+		b = v.([]byte)
+	} else {
+		b, _ = jsonMarshal(map[string]string{"error": msg})
+		errBodyCache.Store(key, b)
+	}
+	c.Header()["Content-Type"] = ctJSON
 	c.WriteHeader(code)
 	_, _ = c.W.Write(b)
 }

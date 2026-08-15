@@ -92,6 +92,21 @@ profile 驱动优化：冻结响应头切片（跳过 Set 规范化）、糖入�
 接口分派）、叶节点切片分派（跳过 map 查找）、参数切片随 Ctx 单池。
 分配预算由 `alloc_test.go` 作为 CI 硬约束（文本 ≤1、参数 ≤1、JSON ≤3）。
 
+### 真实端点对照（examples/tasks 同语义，双方惯用写法 + 各自默认引擎）
+
+| 端点 | web | gin | 结果 |
+|---|---|---|---|
+| GET /tasks 分页+过滤 | 4304 ns | 4366 ns | 打平 |
+| GET /tasks/{id} | 242 ns，2 alloc | 302 ns，3 alloc | **快 20%** |
+| GET 404 | 294 ns，3 alloc | 599 ns，7 alloc | **快 51%** |
+| POST 创建（body 绑定） | 793 ns，7 alloc | 1452 ns，13 alloc | **快 45%** |
+| PUT 更新（path+body） | 738 ns，7 alloc | 1457 ns，13 alloc | **快 49%** |
+| POST done（409） | 279 ns，2 alloc | 599 ns，7 alloc | **快 53%** |
+| 未鉴权 401 | 204 ns，2 alloc | 521 ns，7 alloc | **快 61%** |
+
+来源：body 路径 gin 的 ShouldBindJSON 每请求反射 vs 本框架 goccy 直解码；
+错误路径得益于错误体缓存（同 code+msg 复用字节）。
+
 ## 布局
 
 ```
