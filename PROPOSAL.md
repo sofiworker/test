@@ -90,6 +90,15 @@ app.Must(web.PutJSON("/users/{id}",
 - 结果：静态 JSON 快 gin 27%、参数 JSON 快 21%、五中间件快 2%；
   文本慢 15%（gin 的 String 路径极瘦，字节数仍为 gin 的 1/3）。
 
+### M9 gk 体系接入与跨框架排名（已完成）
+
+接入 gk 的 13 场景基准体系（`benchmarks/web_test.go`，同工同酬对齐 handler 语义）：
+- 对 ghttp 11 场全胜（1.05×–12×；其每请求固定开销 ~700–1100ns）；
+- 对 gin 7 胜 1 平 3 负（静态/JSON 绑定/JSON 响应/中间件/全链路领先 21%–66%；
+  3 个负项绝对值 <100ns）；
+- 本轮优化：`PutText/PatchText/DeleteText` 补全文本糖家族；**Ctx 查询解析缓存**
+  （Query×3 场景从慢 58% 反转为快 6%，全链路 18→14 alloc）。
+
 ### M8 同引擎公平对照（已完成）
 
 `-tags std_json` 回退标准库后（双方同引擎），端点级 6/7 仍反超（4%–68%）：

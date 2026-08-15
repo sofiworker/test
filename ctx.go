@@ -7,6 +7,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"net/url"
 )
 
 // param is a single route parameter captured during matching.
@@ -26,6 +27,7 @@ type Ctx struct {
 	wroteHeader bool
 
 	params []param
+	query  url.Values // 惰性解析缓存：一次请求只解析一次查询串
 	keys   map[any]any
 }
 
@@ -58,6 +60,14 @@ func (c *Ctx) WriteHeader(code int) {
 func (c *Ctx) Write(b []byte) (int, error) {
 	c.WriteHeader(c.status)
 	return c.W.Write(b)
+}
+
+// parsedQuery returns the request's parsed query string, cached per request.
+func (c *Ctx) parsedQuery() url.Values {
+	if c.query == nil {
+		c.query = c.Req.URL.Query()
+	}
+	return c.query
 }
 
 // Param returns the value of a route parameter, or "" if absent.
@@ -112,6 +122,7 @@ func (c *Ctx) reset(w http.ResponseWriter, r *http.Request, params []param) {
 	c.status = http.StatusOK
 	c.wroteHeader = false
 	c.params = params
+	c.query = nil
 	if len(c.keys) > 0 {
 		clear(c.keys)
 	}

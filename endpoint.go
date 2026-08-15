@@ -532,6 +532,21 @@ func PostText[I any](path string, in In[I], fn func(I) (string, error)) *Route {
 	return textRoute("POST", path, in, fn)
 }
 
+// PutText declares a PUT endpoint rendering a string as text/plain 200.
+func PutText[I any](path string, in In[I], fn func(I) (string, error)) *Route {
+	return textRoute("PUT", path, in, fn)
+}
+
+// PatchText declares a PATCH endpoint rendering a string as text/plain 200.
+func PatchText[I any](path string, in In[I], fn func(I) (string, error)) *Route {
+	return textRoute("PATCH", path, in, fn)
+}
+
+// DeleteText declares a DELETE endpoint rendering a string as text/plain 200.
+func DeleteText[I any](path string, in In[I], fn func(I) (string, error)) *Route {
+	return textRoute("DELETE", path, in, fn)
+}
+
 // ---- 无输入（0）变体：消除 web.None 样板。这是唯一的 0 特例，不是元数家族。----
 
 // GetJSON0 declares a GET endpoint with no input contract.

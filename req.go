@@ -117,7 +117,7 @@ func (p PathAccessor) Float64(name string) (float64, error) {
 type QueryAccessor struct{ c *Ctx }
 
 // String returns the query value ("" when absent).
-func (q QueryAccessor) String(name string) string { return q.c.Req.URL.Query().Get(name) }
+func (q QueryAccessor) String(name string) string { return q.c.parsedQuery().Get(name) }
 
 // Int parses a query value as int.
 func (q QueryAccessor) Int(name string) (int, error) {
@@ -156,7 +156,7 @@ func (q QueryAccessor) Float64(name string) (float64, error) {
 
 // Strings returns all values of a repeated query parameter.
 func (q QueryAccessor) Strings(name string) []string {
-	return q.c.Req.URL.Query()[name]
+	return q.c.parsedQuery()[name]
 }
 
 // IntDefault parses a query value as int, falling back to def when absent
