@@ -180,6 +180,15 @@ func TestChatBroadcast(t *testing.T) {
 	}
 	defer b.Close()
 
+	// 同步屏障：服务端在 hub.join 之后才发送 "joined" 确认，客户端
+	// 读到它才保证自己已在广播名单内。Dial 返回只代表握手完成，
+	// join 尚未执行——不等屏障直接发言是时序竞态（低概率漏收）。
+	for _, conn := range []*websocket.Conn{a, b} {
+		if err := waitJoined(conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	if err := a.WriteMessage(websocket.TextMessage, []byte("hello-all")); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +199,21 @@ func TestChatBroadcast(t *testing.T) {
 	}
 	if mt != websocket.TextMessage || string(msg) != "hello-all" {
 		t.Fatalf("broadcast: %q", msg)
+	}
+}
+
+// waitJoined 读到服务端的 "joined" 加入确认即返回，跳过确认之前可能
+// 排队的其它消息。
+func waitJoined(conn *websocket.Conn) error {
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return err
+		}
+		if string(msg) == "joined" {
+			return nil
+		}
 	}
 }
 

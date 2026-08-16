@@ -43,6 +43,28 @@ func TestMountRenderText(t *testing.T) {
 	}
 }
 
+// SortRoutes 启动收尾：幂等，且显式排序后匹配优先级正确（静态压过参数）。
+func TestSortRoutesExplicit(t *testing.T) {
+	app := web.New()
+	app.Must(web.GetText("/users/new", web.NoIn(),
+		func(web.None) (string, error) { return "static", nil }))
+	app.Must(web.GetText("/users/{id}", web.PathString("id"),
+		func(id string) (string, error) { return "param:" + id, nil }))
+
+	// 幂等：连续调用是空操作
+	app.SortRoutes()
+	app.SortRoutes()
+
+	rec := do(t, app, "GET", "/users/new")
+	if body(t, rec) != "static" {
+		t.Fatalf("static route lost after SortRoutes: %q", body(t, rec))
+	}
+	rec = do(t, app, "GET", "/users/42")
+	if body(t, rec) != "param:42" {
+		t.Fatalf("param route: %q", body(t, rec))
+	}
+}
+
 func TestMountRenderJSON(t *testing.T) {
 	app := web.New()
 	app.Must(web.Handle(web.Get("/u"), web.NoIn(), web.JSON[*user](),

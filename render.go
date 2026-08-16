@@ -44,6 +44,15 @@ type preparedBody interface {
 // render writes o through rd. All calls are direct; o is never boxed outside
 // the renderer itself.
 func render[O any](c *Ctx, o O, rd Renderer[O]) error {
+	if c.hijacked {
+		// 连接已升级（WebSocket）：升级器已提交 101，响应流归升级后的
+		// 协议所有。这里必须完全跳过 HTTP 提交——WriteHeader 会触发
+		// net/http 的 "response.WriteHeader on hijacked connection" 日志，
+		// 而 WriteBody 会把字节直接写进连接、污染 WebSocket 帧流
+		// （升级后 ResponseWriter.Write 直达原始连接）。输出契约在此
+		// 只有 Upgraded（空操作）有意义，其它渲染器一律不执行。
+		return nil
+	}
 	if hs, ok := any(rd).(headerSetter); ok {
 		hs.SetHeader(c.Header())
 	}

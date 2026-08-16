@@ -39,7 +39,10 @@ func WSConn() In[*websocket.Conn] { return UpgradeWS(DefaultWSUpgrader) }
 
 // Upgraded renders nothing: the connection was already upgraded (101) and
 // the response stream belongs to the upgraded protocol. Pair it with
-// UpgradeWS/WSConn; the handler's return value is ignored.
+// UpgradeWS/WSConn; the handler's return value is ignored. Once UpgradeWS
+// has hijacked the connection, render() skips ALL HTTP response commits
+// (status, headers and body) — only the handler's own connection writes
+// reach the wire.
 func Upgraded[O any]() Renderer[O] { return upgradedRenderer[O]{} }
 
 type upgradedRenderer[O any] struct{}

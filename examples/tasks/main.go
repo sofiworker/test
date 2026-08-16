@@ -150,35 +150,80 @@ func requireAuth(next w.Handler) w.Handler {
 	}
 }
 
-// chatHub 是 WebSocket 广播中心：所有客户端收所有消息。
+// chatMsg 是写泵队列中的一个出站消息。
+type chatMsg struct {
+	mt   int
+	data []byte
+}
+
+// chatClient 是一个聊天连接：入站由该连接 handler 的读取循环消费，
+// 出站由每连接一个的写泵串行化——gorilla/websocket 每个连接只允许
+// 一个并发写者。
+type chatClient struct {
+	conn *websocket.Conn
+	send chan chatMsg
+}
+
+// chatHub 是 WebSocket 广播中心：所有客户端收所有消息。锁只保护
+// 成员表与非阻塞入队；网络写全部发生在各连接的写泵里——慢客户端
+// 只会填满自己的出站队列并被摘除，不会阻塞整个广播中心。
 type chatHub struct {
 	mu      sync.Mutex
-	clients map[*websocket.Conn]struct{}
+	clients map[*chatClient]struct{}
 }
 
 func newChatHub() *chatHub {
-	return &chatHub{clients: map[*websocket.Conn]struct{}{}}
+	return &chatHub{clients: map[*chatClient]struct{}{}}
 }
 
-func (h *chatHub) join(c *websocket.Conn) {
+func (h *chatHub) join(c *chatClient) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.clients[c] = struct{}{}
+	h.mu.Unlock()
 }
 
-func (h *chatHub) leave(c *websocket.Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// drop 摘除连接并关闭其出站队列（写泵的 range 随之结束）。调用方
+// 持有 h.mu；close 与 delete 在锁内原子完成，广播不会向已关闭的
+// 队列发送。
+func (h *chatHub) drop(c *chatClient) {
+	if _, ok := h.clients[c]; !ok {
+		return
+	}
 	delete(h.clients, c)
+	close(c.send)
 }
 
-func (h *chatHub) broadcast(mt int, msg []byte) {
+func (h *chatHub) leave(c *chatClient) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.drop(c)
+	h.mu.Unlock()
+}
+
+// broadcast 把消息放入每个连接的出站队列。锁内只有非阻塞入队、
+// 没有网络写：队列满的慢客户端立即摘除，其它连接不受影响。
+func (h *chatHub) broadcast(m chatMsg) {
+	h.mu.Lock()
 	for c := range h.clients {
-		if err := c.WriteMessage(mt, msg); err != nil {
-			c.Close()
-			delete(h.clients, c)
+		select {
+		case c.send <- m:
+		default:
+			h.drop(c)
+		}
+	}
+	h.mu.Unlock()
+}
+
+// writePump 是该连接唯一的写者：出站队列 → 连接。写失败（含
+// 队列被 drop 关闭）即退出并关闭连接，从而解除读取循环的阻塞。
+func (c *chatClient) writePump(h *chatHub) {
+	defer func() {
+		h.leave(c) // 幂等：broadcast 已摘除则空操作
+		c.conn.Close()
+	}()
+	for m := range c.send {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if err := c.conn.WriteMessage(m.mt, m.data); err != nil {
+			return
 		}
 	}
 }
@@ -296,20 +341,27 @@ func newApp(db *store) *w.App {
 			}
 		}))
 
-	// 聊天广播 Hub：共享状态 + 连接生命周期管理。
+	// 聊天广播 Hub：每连接出站队列 + 写泵（慢客户端只拖垮自己）。
 	hub := newChatHub()
 	app.Must(w.Handle(w.Get("/ws/chat"),
 		w.WSConn(),
 		w.Upgraded[w.None](),
 		func(conn *websocket.Conn) (w.None, error) {
-			hub.join(conn)
-			defer hub.leave(conn)
+			c := &chatClient{conn: conn, send: make(chan chatMsg, 16)}
+			hub.join(c)
+			defer hub.leave(c)
+			defer conn.Close()
+			go c.writePump(hub)
+			// 加入确认：join 之后才入队，客户端读到 "joined" 即保证
+			// 自己已在广播名单内。握手完成（Dial 返回）早于 join 执行，
+			// 不等到确认就直接发言存在时序竞态（低概率漏收）。
+			c.send <- chatMsg{mt: websocket.TextMessage, data: []byte("joined")}
 			for {
 				mt, msg, err := conn.ReadMessage()
 				if err != nil {
 					return w.None{}, nil
 				}
-				hub.broadcast(mt, msg)
+				hub.broadcast(chatMsg{mt: mt, data: msg})
 			}
 		}))
 
@@ -396,6 +448,10 @@ func newApp(db *store) *w.App {
 
 func main() {
 	app := newApp(&store{tasks: map[int64]task{}})
+	// 启动阶段收尾：路由树一次性权重排序。之后首个请求不再承担排序
+	// 成本（大路由表下是毫秒级首请求尖峰）。App.Serve 会自动调用；
+	// 这里自建 http.Server，因此显式调用。
+	app.SortRoutes()
 
 	srv := &http.Server{Addr: ":8092", Handler: app}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

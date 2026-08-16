@@ -63,13 +63,19 @@ func init() {
 	start = time.Now()
 	ginStressApp = newGinStress(stressN)
 	ginReg = time.Since(start)
+	// 启动阶段收尾（App.Serve 会自动做）：排序与注册分开计量，首个
+	// 请求不再承担排序成本——这正是生产推荐的挂载顺序。
+	start = time.Now()
+	stressApp.(*web.App).SortRoutes()
+	webSort = time.Since(start)
 }
 
-var webReg, ginReg time.Duration
+var webReg, webSort, ginReg time.Duration
 
 func TestStressRegistrationTime(t *testing.T) {
-	t.Logf("web 注册 %d 路由: %v", stressN*6, webReg)
-	t.Logf("gin 注册 %d 路由: %v", stressN*6, ginReg)
+	t.Logf("web 注册 %d 路由: %v（注册期不排序）", stressN*6, webReg)
+	t.Logf("web 启动收尾排序: %v（首个请求不再承担）", webSort)
+	t.Logf("gin 注册 %d 路由: %v（增量插入，含排序）", stressN*6, ginReg)
 }
 
 // 正确性：两框架在压力场景下状态码一致
