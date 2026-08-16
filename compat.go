@@ -3,6 +3,8 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -30,6 +32,42 @@ func Static(prefix, dir string) *Route {
 	}
 	fs := http.StripPrefix(prefix, http.FileServer(http.Dir(dir)))
 	return Raw("GET", prefix+"{file...}", FromStd(fs))
+}
+
+// Healthcheck returns the standard /healthz route.
+func Healthcheck() *Route {
+	return Handle(Get("/healthz"), NoIn(), JSON[map[string]string](),
+		func(None) (map[string]string, error) {
+			return map[string]string{"status": "ok"}, nil
+		})
+}
+
+// SPA serves a single-page application from dir under prefix: existing files
+// are served directly, anything else (including unknown routes) falls back
+// to index.html. Typical use: SPA("/", "./dist").
+func SPA(prefix, dir string) []*Route {
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rel := strings.TrimPrefix(r.URL.Path, prefix)
+		full := filepath.Join(dir, rel)
+		if info, err := os.Stat(full); err != nil || info.IsDir() {
+			http.ServeFile(w, r, filepath.Join(dir, "index.html"))
+			return
+		}
+		http.ServeFile(w, r, full)
+	})
+	routes := []*Route{
+		Raw("GET", prefix+"{path...}", FromStd(handler)),
+	}
+	// 前缀本身（无尾斜杠）也要命中；prefix="/" 时即根路径。
+	if bare := strings.TrimSuffix(prefix, "/"); bare != "" {
+		routes = append(routes, Raw("GET", bare, FromStd(handler)))
+	} else {
+		routes = append(routes, Raw("GET", "/", FromStd(handler)))
+	}
+	return routes
 }
 
 // ServeRoute mounts the route in a fresh App and serves one request: a

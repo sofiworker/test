@@ -25,10 +25,12 @@ type Ctx struct {
 
 	status      int
 	wroteHeader bool
+	hijacked    bool // 连接已升级（WebSocket）：框架不再触碰响应流
 
-	params []param
-	query  url.Values // 惰性解析缓存：一次请求只解析一次查询串
-	keys   map[any]any
+	params   []param
+	query    url.Values // 惰性解析缓存：一次请求只解析一次查询串
+	clientIP string     // TrustedProxies 解析的客户端 IP
+	keys     map[any]any
 }
 
 // Method returns the request method.
@@ -121,8 +123,10 @@ func (c *Ctx) reset(w http.ResponseWriter, r *http.Request, params []param) {
 	c.Req = r
 	c.status = http.StatusOK
 	c.wroteHeader = false
+	c.hijacked = false
 	c.params = params
 	c.query = nil
+	c.clientIP = ""
 	if len(c.keys) > 0 {
 		clear(c.keys)
 	}

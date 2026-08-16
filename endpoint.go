@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 
 	"example.com/web/httperr"
@@ -332,6 +333,30 @@ func FormFile(name string, maxBytes int64) In[Upload] {
 	})
 }
 
+// RawRequest declares the raw *http.Request as the input contract: the
+// ultimate escape hatch inside a typed endpoint. Response-side control still
+// belongs to the output contract; for full writer access use web.Raw.
+func RawRequest() In[*http.Request] {
+	return InFunc(func(r Req) (*http.Request, error) { return r.Raw().Req, nil })
+}
+
+// FormValues declares a x-www-form-urlencoded body as the input contract:
+// raw url.Values, mapped into your own struct explicitly — no reflection,
+// no struct tags.
+func FormValues() In[url.Values] {
+	return InFunc(func(r Req) (url.Values, error) {
+		b, err := io.ReadAll(r.c.Req.Body)
+		if err != nil {
+			return nil, httperr.BadRequest(err)
+		}
+		v, err := url.ParseQuery(string(b))
+		if err != nil {
+			return nil, httperr.BadRequest(err)
+		}
+		return v, nil
+	})
+}
+
 // BodyJSON declares the request body, decoded as T, as the input contract.
 // Decode failures are automatically mapped to 400. Optional validators run
 // after decoding, in order: a validator error becomes a 400 whose message is
@@ -420,6 +445,7 @@ type Route struct {
 	path   string
 	h      Handler
 	mws    []Middleware
+	doc    *OpDoc
 
 	inMeta  any // retained for introspection (OpenAPI generation, M3)
 	outMeta any
@@ -430,6 +456,21 @@ func (r *Route) Method() string { return r.method }
 
 // Path returns the route's path pattern.
 func (r *Route) Path() string { return r.path }
+
+// Doc attaches OpenAPI documentation options to the route (copy-on-write).
+// All fields optional; uninferred ones are auto-filled by App.Doc.
+func (r *Route) Doc(opts ...DocOption) *Route {
+	n := *r
+	d := &OpDoc{}
+	if r.doc != nil {
+		*d = *r.doc
+	}
+	for _, o := range opts {
+		o(d)
+	}
+	n.doc = d
+	return &n
+}
 
 // With returns a copy of the route wrapped with extra middleware. Route
 // middleware runs inside the app's global stack, in With order.
@@ -547,33 +588,6 @@ func DeleteText[I any](path string, in In[I], fn func(I) (string, error)) *Route
 	return textRoute("DELETE", path, in, fn)
 }
 
-// ---- 无输入（0）变体：消除 web.None 样板。这是唯一的 0 特例，不是元数家族。----
-
-// GetJSON0 declares a GET endpoint with no input contract.
-func GetJSON0[O any](path string, fn func() (O, error)) *Route {
-	return jsonRoute("GET", path, NoIn(), func(_ None) (O, error) { return fn() }, http.StatusOK)
-}
-
-// PostJSON0 declares a POST endpoint with no input contract.
-func PostJSON0[O any](path string, fn func() (O, error)) *Route {
-	return jsonRoute("POST", path, NoIn(), func(_ None) (O, error) { return fn() }, http.StatusOK)
-}
-
-// CreatedJSON0 declares a POST endpoint with no input contract, status 201.
-func CreatedJSON0[O any](path string, fn func() (O, error)) *Route {
-	return jsonRoute("POST", path, NoIn(), func(_ None) (O, error) { return fn() }, http.StatusCreated)
-}
-
-// GetText0 declares a GET text endpoint with no input contract.
-func GetText0(path string, fn func() (string, error)) *Route {
-	return textRoute("GET", path, NoIn(), func(_ None) (string, error) { return fn() })
-}
-
-// PostText0 declares a POST text endpoint with no input contract.
-func PostText0(path string, fn func() (string, error)) *Route {
-	return textRoute("POST", path, NoIn(), func(_ None) (string, error) { return fn() })
-}
-
 // ---- 输入组合子：path + body 等任意来源的拼装（零反射，类型全显式）----
 
 // Pair is the composed input of two sources. Go has no tuple type; the pair
@@ -630,6 +644,58 @@ func mergeMeta(a, b any) OpMeta {
 		m.RequestBody = mb.RequestBody
 	}
 	return m
+}
+
+// MapIn composes two input descriptors and maps them into a custom input
+// type with an explicit function: the idiomatic way to name combined inputs
+// instead of using Pair.
+//
+//	web.MapIn(web.PathInt64("id"), web.BodyJSON[UpdateUserReq](),
+//	    func(id int64, body UpdateUserReq) GetUserInput {
+//	        return GetUserInput{ID: id, Body: body}
+//	    })
+func MapIn[A, B, T any](a In[A], b In[B], f func(A, B) T) In[T] {
+	return inFunc[T]{
+		fn: func(r Req) (T, error) {
+			var zero T
+			va, err := a.build(r.c)
+			if err != nil {
+				return zero, err
+			}
+			vb, err := b.build(r.c)
+			if err != nil {
+				return zero, err
+			}
+			return f(va, vb), nil
+		},
+		// 元数据随组合子合并：OpenAPI 参数/请求体不因自定义映射而丢失
+		meta: mergeMeta(a, b),
+	}
+}
+
+// MapIn3 composes three input descriptors into a custom input type.
+func MapIn3[A, B, C, T any](a In[A], b In[B], c In[C], f func(A, B, C) T) In[T] {
+	ab := mergeMeta(a, b)
+	meta := mergeMeta(opMetaCarrier{ab}, c)
+	return inFunc[T]{
+		fn: func(r Req) (T, error) {
+			var zero T
+			va, err := a.build(r.c)
+			if err != nil {
+				return zero, err
+			}
+			vb, err := b.build(r.c)
+			if err != nil {
+				return zero, err
+			}
+			vc, err := c.build(r.c)
+			if err != nil {
+				return zero, err
+			}
+			return f(va, vb, vc), nil
+		},
+		meta: meta,
+	}
 }
 
 // All3 composes three input descriptors into a Triple.

@@ -1,15 +1,27 @@
-//go:build !std_json && !jsoniter && !(sonic && avx && (linux || windows || darwin) && amd64)
-
 package web
 
-// 默认 JSON 引擎：goccy/go-json —— 纯 Go、stdlib 兼容、无汇编依赖，
-// 任何 Go 版本可用；小对象编码明显快于 encoding/json。
-// 可选构建标签（与 gin 同机制）：std_json 回退标准库、jsoniter、
-// sonic（需 avx+amd64）。所有 JSON 出口都经这两个变量。
+import "encoding/json"
 
-import gojson "github.com/goccy/go-json"
+// 框架自身仅依赖标准库 encoding/json；需要更高性能或特殊行为时，
+// 经 UseJSONCodec 注入外部实现（如 goccy/go-json、sonic），框架不引入
+// 任何第三方 JSON 依赖。
+
+// MarshalFunc serializes a value to JSON bytes.
+type MarshalFunc func(v any) ([]byte, error)
+
+// UnmarshalFunc deserializes JSON bytes into a value.
+type UnmarshalFunc func(data []byte, v any) error
 
 var (
-	jsonMarshal   = gojson.Marshal
-	jsonUnmarshal = gojson.Unmarshal
+	jsonMarshal   MarshalFunc   = json.Marshal
+	jsonUnmarshal UnmarshalFunc = json.Unmarshal
 )
+
+// UseJSONCodec injects an external JSON implementation. All renderers, body
+// decoding, SSE and error envelopes go through the injected functions.
+// Not safe for concurrent mutation: call it once during startup, before
+// serving.
+func UseJSONCodec(m MarshalFunc, u UnmarshalFunc) {
+	jsonMarshal = m
+	jsonUnmarshal = u
+}

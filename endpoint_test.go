@@ -1,8 +1,11 @@
 package web_test
 
 import (
+	"html/template"
 	"io"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -181,18 +184,6 @@ func TestFlavoredEntries(t *testing.T) {
 	}
 }
 
-func TestZeroVariants(t *testing.T) {
-	app := web.New()
-	app.Must(web.GetJSON0("/j0", func() (*user, error) { return &user{ID: 7}, nil }))
-	app.Must(web.GetText0("/t0", func() (string, error) { return "plain", nil }))
-	if rec := do(t, app, "GET", "/j0"); body(t, rec) != `{"id":7,"name":""}` {
-		t.Fatalf("GetJSON0: %q", body(t, rec))
-	}
-	if rec := do(t, app, "GET", "/t0"); body(t, rec) != "plain" {
-		t.Fatalf("GetText0: %q", body(t, rec))
-	}
-}
-
 func TestVariadicMustAndGroup(t *testing.T) {
 	app := web.New()
 	var events []string
@@ -204,7 +195,7 @@ func TestVariadicMustAndGroup(t *testing.T) {
 	})
 	g.Must(
 		web.GetJSON("/a", web.NoIn(), func(web.None) (*user, error) { return &user{ID: 1}, nil }),
-		web.GetJSON0("/b", func() (*user, error) { return &user{ID: 2}, nil }),
+		web.Handle(web.Get("/b"), web.NoIn(), web.JSON[*user](), func(web.None) (*user, error) { return &user{ID: 2}, nil }),
 	)
 	if rec := do(t, app, "GET", "/api/v1/a"); body(t, rec) != `{"id":1,"name":""}` {
 		t.Fatalf("group a: %q", body(t, rec))
@@ -257,5 +248,136 @@ func TestComposedInputs(t *testing.T) {
 	app.ServeHTTP(rec, req)
 	if body(t, rec) != `{"id":5,"name":"Ada","page":2}` {
 		t.Fatalf("triple: %q", body(t, rec))
+	}
+}
+
+func TestMapInCombinator(t *testing.T) {
+	type updateReq struct {
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	type getInput struct {
+		ID   int64
+		Body updateReq
+	}
+	app := web.New()
+	app.Must(web.PutJSON("/tasks/{id}",
+		web.MapIn(
+			web.PathInt64("id"),
+			web.BodyJSON[updateReq](),
+			func(id int64, body updateReq) getInput {
+				return getInput{ID: id, Body: body}
+			},
+		),
+		func(in getInput) (map[string]any, error) {
+			return map[string]any{"id": in.ID, "title": in.Body.Title}, nil
+		}))
+
+	req := httptest.NewRequest("PUT", "/tasks/9", strings.NewReader(`{"title":"ship"}`))
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != 200 || body(t, rec) != `{"id":9,"title":"ship"}` {
+		t.Fatalf("%d %q", rec.Code, body(t, rec))
+	}
+
+	// 错误短路：body 非法 → 400，映射函数不被调用
+	req = httptest.NewRequest("PUT", "/tasks/9", strings.NewReader(`{bad`))
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("short-circuit: %d", rec.Code)
+	}
+}
+
+func TestMapIn3Combinator(t *testing.T) {
+	type q struct {
+		id   int64
+		page int
+		tag  string
+	}
+	app := web.New()
+	app.Must(web.GetJSON("/x/{id}",
+		web.MapIn3(
+			web.PathInt64("id"),
+			web.QueryInt("page"),
+			web.QueryString("tag"),
+			func(id int64, page int, tag string) q { return q{id, page, tag} },
+		),
+		func(v q) (map[string]any, error) {
+			return map[string]any{"id": v.id, "page": v.page, "tag": v.tag}, nil
+		}))
+	if rec := do(t, app, "GET", "/x/5?page=2&tag=go"); body(t, rec) != `{"id":5,"page":2,"tag":"go"}` {
+		t.Fatalf("%q", body(t, rec))
+	}
+}
+
+func TestXMLHTMLFormRenderers(t *testing.T) {
+	type payload struct {
+		XMLName struct{} `xml:"item" json:"-"`
+		ID      int64    `xml:"id" json:"id"`
+	}
+	app := web.New()
+	app.Must(web.Handle(web.Get("/xml"), web.NoIn(), web.XML[payload](),
+		func(web.None) (payload, error) { return payload{ID: 7}, nil }))
+	app.Must(web.Handle(web.Get("/html"), web.NoIn(),
+		web.HTML[map[string]string](template.Must(template.New("page").Parse("Hello {{.Name}}")), "page"),
+		func(web.None) (map[string]string, error) { return map[string]string{"Name": "Ada"}, nil }))
+	app.Must(web.Handle(web.Post("/form"), web.FormValues(), web.JSON[url.Values](),
+		func(v url.Values) (url.Values, error) { return v, nil }))
+
+	rec := do(t, app, "GET", "/xml")
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/xml; charset=utf-8" ||
+		!strings.Contains(body(t, rec), "<id>7</id>") {
+		t.Fatalf("%d %q %q", rec.Code, rec.Header().Get("Content-Type"), body(t, rec))
+	}
+	rec = do(t, app, "GET", "/html")
+	if body(t, rec) != "Hello Ada" {
+		t.Fatalf("html: %q", body(t, rec))
+	}
+	req := httptest.NewRequest("POST", "/form", strings.NewReader("a=1&b=two"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != 200 || body(t, rr) != `{"a":["1"],"b":["two"]}` {
+		t.Fatalf("form: %d %q", rr.Code, body(t, rr))
+	}
+}
+
+func TestMapInOpenAPIMetadata(t *testing.T) {
+	type updateReq struct {
+		Title string `json:"title"`
+	}
+	type getInput struct {
+		ID   int64
+		Body updateReq
+	}
+	app := web.New()
+	app.Must(web.PutJSON("/tasks/{id}",
+		web.MapIn(web.PathInt64("id"), web.BodyJSON[updateReq](),
+			func(id int64, body updateReq) getInput { return getInput{ID: id, Body: body} }),
+		func(in getInput) (map[string]any, error) { return map[string]any{}, nil }))
+
+	doc := app.Doc(web.Info{Title: "t", Version: "1"})
+	op := doc.Paths["/tasks/{id}"]["put"]
+	if op == nil || len(op.Parameters) != 1 || op.Parameters[0].Name != "id" || op.RequestBody == nil {
+		t.Fatalf("MapIn metadata lost: %+v", op)
+	}
+}
+
+func TestRawRequestDescriptor(t *testing.T) {
+	app := web.New()
+	app.Must(web.GetJSON("/echo", web.RawRequest(),
+		func(r *http.Request) (map[string]string, error) {
+			return map[string]string{
+				"ua":     r.Header.Get("User-Agent"),
+				"method": r.Method,
+			}, nil
+		}))
+	req := httptest.NewRequest("GET", "/echo", nil)
+	req.Header.Set("User-Agent", "escape-hatch-test")
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != 200 || body(t, rec) != `{"method":"GET","ua":"escape-hatch-test"}` {
+		t.Fatalf("%d %q", rec.Code, body(t, rec))
 	}
 }

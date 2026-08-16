@@ -20,6 +20,15 @@ type Req struct{ c *Ctx }
 // Context returns the request's cancellation signal.
 func (r Req) Context() context.Context { return r.c.Context() }
 
+// ClientIP returns the client IP resolved by TrustedProxies, or the direct
+// remote address when the middleware is not installed.
+func (r Req) ClientIP() string {
+	if r.c.clientIP != "" {
+		return r.c.clientIP
+	}
+	return hostOnly(r.c.Req.RemoteAddr)
+}
+
 // Raw returns the underlying *Ctx. Escape hatch for cases the typed
 // accessors do not cover — e.g. reading typed keys via the key-centric API
 // (key.Get(r.Raw())). Prefer the typed accessors.

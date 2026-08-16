@@ -25,6 +25,10 @@ type node struct {
 	// 热分派是线性扫描，零哈希成本（profile 中的 HashTrieMap.Load）。
 	leafHandlers []leafHandler
 	methods      []string // sorted, for the Allow header
+
+	// idx 是首字节分派表（httprouter 同款思想）：宽节点（≥4 个子节点且首字节
+	// 互异）在权重排序时一次性构建，匹配从线性扫描变为 O(1) 跳转。
+	idx *[256]int16
 }
 
 // leafHandler is one method at one leaf.
@@ -155,56 +159,122 @@ func (n *node) insert(segs []string, h Handler, method string) error {
 	return child.insert(rest, h, method)
 }
 
-// match walks the request path. rem is the unconsumed tail of the current
-// segment ("" at a segment boundary); pos is the offset of the next segment
-// in path; ps collects parameters in registration order.
+// match walks the request path. pos is the offset of the current position;
+// ps collects parameters in registration order.
+//
+// 热路径设计：静态子节点用"前缀 + 边界字符"直接判定——段尾 '/' 或路径结尾，
+// 无需先扫描段尾（旧实现每段一次 IndexByte）；只有参数/catch-all 才需要
+// 扫描段界。段内前缀合并（radix split）由"边界未到则继续深入"自然表达。
 //
 // It returns the deepest node reached on success; whether that node has a
 // handler for the method is the caller's concern (404 vs 405 vs dispatch).
-func (n *node) match(rem, path string, pos int, ps []param) (*node, []param, bool) {
-	var seg string
-	if rem != "" {
-		seg = rem
+func (n *node) match(path string, pos int, ps []param) (*node, []param, bool) {
+	if pos >= len(path) {
+		return n, ps, true
+	}
+
+	// 首字节分派快路径：宽节点 O(1) 定位唯一可能匹配的子节点。
+	if n.idx != nil {
+		if ci := n.idx[path[pos]]; ci >= 0 {
+			c := n.children[ci]
+			lp := len(c.prefix)
+			if pos+lp <= len(path) && path[pos:pos+lp] == c.prefix {
+				next := pos + lp
+				if next < len(path) && path[next] == '/' {
+					next++
+				}
+				if nd, p, ok := c.match(path, next, ps); ok {
+					return nd, p, true
+				}
+			}
+		}
 	} else {
-		if pos >= len(path) {
-			return n, ps, true
-		}
-		var next int
-		seg, next = nextSeg(path, pos)
-		pos = next
-	}
-
-	for _, c := range n.children {
-		if strings.HasPrefix(seg, c.prefix) {
-			if nd, p, ok := c.match(seg[len(c.prefix):], path, pos, ps); ok {
+		for _, c := range n.children {
+			lp := len(c.prefix)
+			if pos+lp > len(path) || path[pos:pos+lp] != c.prefix {
+				continue
+			}
+			next := pos + lp
+			if next < len(path) && path[next] == '/' {
+				next++ // 完整段命中：跳过 '/' 进入下一段
+			}
+			// 未到边界则继续在同段内深入（radix split 的段内碎片）
+			if nd, p, ok := c.match(path, next, ps); ok {
 				return nd, p, true
 			}
 		}
 	}
 
-	// Wildcards match a whole segment only: skip them mid-segment.
-	if rem == "" {
-		if n.param != nil {
-			if nd, p, ok := n.param.match("", path, pos, append(ps, param{key: n.paramName, value: seg})); ok {
-				return nd, p, true
-			}
+	// 参数：扫描到段尾（IndexByte 走 SIMD，长段比逐字节循环快一个数量级）
+	end := len(path)
+	if idx := strings.IndexByte(path[pos:], '/'); idx >= 0 {
+		end = pos + idx
+	}
+	if n.param != nil {
+		next := end
+		if next < len(path) {
+			next++
 		}
-		if n.catch != nil {
-			rest := seg
-			if pos < len(path) {
-				rest += path[pos-1:] // path[pos-1] is the '/' before this segment
-			}
-			return n.catch, append(ps, param{key: n.catchName, value: rest}), true
+		if nd, p, ok := n.param.match(path, next, append(ps, param{key: n.paramName, value: path[pos:end]})); ok {
+			return nd, p, true
 		}
+	}
+	if n.catch != nil {
+		return n.catch, append(ps, param{key: n.catchName, value: path[pos:]}), true
 	}
 	return nil, ps, false
 }
 
-func nextSeg(path string, pos int) (string, int) {
-	if end := strings.IndexByte(path[pos:], '/'); end >= 0 {
-		return path[pos : pos+end], pos + end + 1
+// weight returns the number of handlers in the subtree: routing priority.
+func (n *node) weight() int {
+	w := len(n.leafHandlers)
+	for _, c := range n.children {
+		w += c.weight()
 	}
-	return path[pos:], len(path)
+	if n.param != nil {
+		w += n.param.weight()
+	}
+	if n.catch != nil {
+		w += n.catch.weight()
+	}
+	return w
+}
+
+// sortByWeight orders static children by subtree weight, descending: dense
+// subtrees are tried first. Registration-time only — static priority, no
+// runtime mutation, race-free under concurrent requests.
+func (n *node) sortByWeight() {
+	for _, c := range n.children {
+		c.sortByWeight()
+	}
+	if n.param != nil {
+		n.param.sortByWeight()
+	}
+	if n.catch != nil {
+		n.catch.sortByWeight()
+	}
+	sort.SliceStable(n.children, func(i, j int) bool {
+		return n.children[i].weight() > n.children[j].weight()
+	})
+	n.idx = nil
+	if len(n.children) >= 4 {
+		var t [256]int16
+		unique := true
+		for i := range t {
+			t[i] = -1
+		}
+		for i, c := range n.children {
+			b := c.prefix[0]
+			if t[b] >= 0 {
+				unique = false
+				break
+			}
+			t[b] = int16(i)
+		}
+		if unique {
+			n.idx = &t
+		}
+	}
 }
 
 func commonPrefix(a, b string) int {

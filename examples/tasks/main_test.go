@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 
 	httperr "example.com/web/httperr"
 )
@@ -155,4 +161,85 @@ func TestProblemJSONDisabledByDefault(t *testing.T) {
 		t.Fatalf("%d %q", rec.Code, rec.Body.String())
 	}
 	_ = httperr.NotFound
+}
+
+func TestChatBroadcast(t *testing.T) {
+	_, h := newTestServer(t)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/chat"
+	a, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	if err := a.WriteMessage(websocket.TextMessage, []byte("hello-all")); err != nil {
+		t.Fatal(err)
+	}
+	b.SetReadDeadline(time.Now().Add(2 * time.Second))
+	mt, msg, err := b.ReadMessage()
+	if err != nil {
+		t.Fatalf("broadcast read: %v", err)
+	}
+	if mt != websocket.TextMessage || string(msg) != "hello-all" {
+		t.Fatalf("broadcast: %q", msg)
+	}
+}
+
+// syncWriter is a thread-safe recorder for streaming tests.
+type syncWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	header http.Header
+}
+
+func newSyncWriter() *syncWriter {
+	return &syncWriter{header: http.Header{}}
+}
+
+func (s *syncWriter) Header() http.Header { return s.header }
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+func (s *syncWriter) WriteHeader(int) {}
+func (s *syncWriter) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestSSETickerCancellation(t *testing.T) {
+	_, h := newTestServer(t)
+	req := httptest.NewRequest("GET", "/events/ticker", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	rec := newSyncWriter()
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+	// 读到第一帧后取消上下文，会话应优雅退出
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.String(), "event: tick") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE session did not exit on cancellation")
+	}
 }

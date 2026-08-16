@@ -32,7 +32,7 @@ app.Must(web.Handle(
 ))
 ```
 
-完整可运行示例：`examples/basic/main.go` 与 `demo/main.go`（含注册层糖、输入组合、Group）。
+完整样例：`examples/tasks/` —— 一个应用覆盖渲染全景（JSON/Text/XML/HTML 模板/下载/字节/文件流）、表单/上传、SSE/WebSocket、静态/SPA、CRUD+鉴权+分页、OpenAPI 文档、优雅停机。
 
 ## API 速览
 
@@ -49,9 +49,12 @@ app.Must(web.Handle(
 | 流式输出 | `web.Stream(contentType)`：O = `func(io.Writer) error`，SSE/分块/长轮询的显式契约 |
 | 声明式错误响应 | `web.Docs(renderer, map[string]*Response)`：给 OpenAPI 声明 404 等语义，运行时不变 |
 | 万能输入 | `web.InFunc(func(r web.Req) (I, error))` —— 任意组合、任意参数个数，100 参数=一个结构体 |
-| 输入组合 | `web.All(a, b)` → `In[Pair[A,B]]`；`web.All3(a, b, c)` → `In[Triple[A,B,C]]`；错误短路 |
-| 输出契约 | `web.JSON[T]() / Text() / Status(code, inner) / NoContent[O]() / Redirect[O](code, url)` + 自定义 `Renderer[O]` |
-| JSON 引擎 | 默认 [goccy/go-json](https://github.com/goccy/go-json)；构建标签 `std_json`/`jsoniter`/`sonic` 切换（同 gin 机制） |
+| 输入组合 | `web.All(a, b)` → `In[Pair[A,B]]`、`All3` → `Triple`；**`MapIn(a, b, f)` / `MapIn3` → 自定义命名结构体**（推荐）；错误短路 |
+| 输出契约 | `JSON[T]() / Text() / XML[T]() / HTML[T](tmpl, name) / Bytes(ct) / Status(...) / NoContent / Redirect / SSE / Stream / Download / StreamFile` + 自定义 `Renderer[O]` |
+| 表单输入 | `web.FormValues()`：urlencoded → `url.Values`（显式映射，零反射零 tag） |
+| 静态文件 | `web.Static(prefix, dir)`、`web.SPA(prefix, dir)`（index.html 回退） |
+| 路由文档 | `route.Doc(Summary/Description/Tags/OperationID/Deprecated)`：声明优先、未声明自动反推 |
+| JSON 引擎 | 仅标准库 `encoding/json`，零第三方 JSON 依赖；`UseJSONCodec(m, u)` 可注入外部实现（如 goccy/sonic） |
 | 错误信封 | 默认 `{"error":...}`；`app.UseProblemJSON()` 切 RFC 7807（typed fields 并入响应） |
 | 通配符路径 | `web.PathRest(name)`：`{name...}` 段的输入契约 |
 | 查询补全 | `QueryFloat64`（可带约束）、`QueryStrings`（多值数组） |
@@ -69,7 +72,10 @@ app.Must(web.Handle(
 | 响应头契约 | `web.WithHeader(rd, name, value)`：渲染时设置 + OpenAPI 同步（可链式） |
 | 单测助手 | `web.ServeRoute(route, req)` —— 路由即数据，一行测试一个端点 |
 | 中间件电池续 | `Compress()`（流式 gzip，免缓冲）、`RateLimit(rps, burst, key)`（令牌桶→429）、`CacheControl(s)`/`NoCache()` |
-| SSE 帮手 | `web.SSE()`：O = `func(*SSEWriter) error`，类型化 `Event().Data/Text` + `Ping()`，自动 flush |
+| SSE 帮手 | `web.SSE()`：O = `func(*SSEWriter) error`，`Event().Data/Text`、`ID/Retry/Comment/Ping`，自动 flush |
+| WebSocket | `web.WSConn()`/`UpgradeWS(u)` 输入契约（gorilla/websocket）+ `Upgraded[O]()` 输出契约；会话由 handler 拥有，升级失败→400 |
+| 生产设施 | `app.Serve(addr)`（信号优雅停机）、`web.PProf()`、`SecureHeaders()`、`LoggerSlog/RecoverSlog/SlogContext`、`TrustedProxies(cidrs...)` + `r.ClientIP()`、`Healthcheck()`、`SPA(prefix, dir)`（index.html 回退） |
+| 文件输出 | `web.Download(filename)`（附件下载）、`web.StreamFile(ct)`（io.ReadSeeker 流式） |
 | 嵌套分组 | `g.Group(prefix, mws...)`：前缀与中间件组合 |
 | 路由元数据 | `route.Method()` / `route.Path()` |
 | OpenAPI | `app.Doc(web.Info{...})` 从挂载路由直接生成 3.0 文档；描述器自动携带参数/请求体/schema 元数据，挂一条 `/openapi.json` 路由即服务 |
@@ -80,11 +86,11 @@ app.Must(web.Handle(
 
 | 用例 | web | gin | 结果 |
 |---|---|---|---|
-| 静态 JSON | 150.6 ns，64 B，2 alloc | 205.4 ns，64 B，2 alloc | **快 27%** |
-| 参数 JSON（含 int64 解析） | 183.4 ns，64 B，2 alloc | 233.0 ns，64 B，2 alloc | **快 21%** |
-| 5 层中间件 | 88.7 ns，16 B，1 alloc | 90.7 ns，48 B，1 alloc | 快 2% |
-| 静态文本 | 89.0 ns，16 B，1 alloc | 77.4 ns，48 B，1 alloc | 慢 15%，字节 1/3 |
-| 404 | 69.8 ns，16 B，1 alloc | 42.5 ns，0 B，0 alloc | 错误路径；gin 404 几乎不做事 |
+| 静态文本 | 83.6 ns / **16 B** | 71.2 ns / 48 B | 慢 17%，字节 1/3 |
+| 静态 JSON | 184.3 ns / 2 alloc | 167.0 ns / 2 | 慢 10%（同引擎基线） |
+| 参数 JSON | 225.6 ns / 2 | 183.9 ns / 2 | 慢 23% |
+| 5 参数 | 173.3 ns / 2 | 147.0 ns / 2 | 慢 18% |
+| 404 | 33.7 ns / **0** | 46.8 ns / 0 | **快 28%** |
 
 **零反射 + 引擎优势**：默认 JSON 引擎为 goccy/go-json（纯 Go、任何 Go 版本可用；
 构建标签 `std_json`/`jsoniter`/`sonic` 可切换，与 gin 的引擎切换同机制）。
@@ -136,9 +142,8 @@ ctx.go        Ctx 池化、类型键
 app.go        App：Mount/Must/Group/ServeHTTP、405/OPTIONS/HEAD
 middleware.go Recover、Logger（报告错误映射后的有效状态码）
 httperr/      类型化 HTTP 错误
-examples/tasks/ 完整参考应用：CRUD + 鉴权 + 分页/过滤 + 状态机 + OpenAPI + 优雅停机 + 端到端测试
-demo/         最小 demo（两种注册风格 + 组合 + Group）
-examples/     完整示例
+examples/tasks/ 唯一完整样例：渲染全景 + 表单/上传 + SSE/WebSocket + 静态/SPA + CRUD/鉴权/分页 + OpenAPI + 优雅停机 + 端到端测试
+scripts/      冒烟脚本（smoke.sh）与 k6 压测脚本（k6.js）
 benchmarks/   独立模块：vs gin、stdlib ServeMux
 ```
 

@@ -90,6 +90,107 @@ app.Must(web.PutJSON("/users/{id}",
 - 结果：静态 JSON 快 gin 27%、参数 JSON 快 21%、五中间件快 2%；
   文本慢 15%（gin 的 String 路径极瘦，字节数仍为 gin 的 1/3）。
 
+### M17 审阅整改：单一 API + 纯标准库 JSON + 渲染补全（工作区，待审阅）
+
+用户审阅后的五项整改：
+1. **单一 API**：删除链式构建器（NewChain/builder_go127.go），保留 Tapir 式扁平
+   `Handle` + `WithIn/WithOut` 为唯一形态；文档选项改为 `route.Doc(...)` 挂载；
+2. **纯标准库 JSON**：删除全部构建标签文件（std_json/go_json/jsoniter/sonic）与
+   第三方 JSON 依赖（go.mod 仅剩 gorilla/websocket）；新增 `UseJSONCodec(m, u)`
+   注入点，序列化实现完全外部化；
+3. **渲染/非 JSON 补全**：`XML[T]()`、`HTML[T](tmpl, name)`、`Bytes(ct)`、
+   `FormValues()`（urlencoded → url.Values 显式映射）；静态文件 Static/SPA 已有；
+4. **命名清理**：删除 GetText0/GetJSON0 等 0 变体家族，无输入路由统一
+   `NoIn() + web.None` 唯一形态；
+5. **MapIn/MapIn3 组合子**：`MapIn(a, b, func(A,B) T)` 映射到自定义命名结构体，
+   解决 Pair 命名问题（Pair/All 保留）；错误短路语义与 All 一致；
+   自评估修正：补上 OpenAPI 元数据合并（组合输入的参数/请求体不因自定义
+   映射丢失，与 All/All3 一致）。
+- 性能基线更新为标准库同引擎（JSON 微基准慢 10-23%，端点级 5 胜 2 平不变；
+  注入 goccy/sonic 可恢复编码密集路径优势）；
+- 全部测试 + race 全绿；gk 基准适配器同步更新。
+
+### M16 超大规模压力 + 超长参数 SIMD（工作区，待审阅）
+
+- 压力基准 `benchmarks/stress_test.go`：2 万资源 × 6 形态 = **12 万条混合路由**
+  （静态 GET/参数 GET/POST/PUT/DELETE/通配符），含状态码一致性断言；
+- 注册性能：web 163ms vs gin 62ms（惰性排序修复后均为百毫秒级）；
+- 首字节分派表 int16（内存减半）；param 段尾扫描换 SIMD `IndexByte`——
+  **超长参数（2000 字符）771→136ns，反超 gin 4.2 倍**；
+- 12 万路由稳态（stdlib 同引擎）：静态 94.4 vs 109.5（快 14%）、参数打平、
+  通配符慢 23ns、深层未命中慢 34ns、分支未命中慢 16ns、超长路径未命中打平；
+  405 慢 3× 属语义差异（web 写 Allow+JSON body 3 alloc，gin 直接空 404 0 alloc）；
+- 正确性：状态码一致性测试（含 405/404/200 各场景）通过；模糊 15s 通过。
+
+### M15 规模化路由：首字节分派 + 惰性排序（工作区，待审阅）
+
+用户追问"5 参数与 200 路由为何比不过 gin、更大规模如何"的完整答复：
+1. 规模化基准实测（200/1000/5000 路由）：旧实现随规模增长（静态 87→120ns），
+   gin 平坦——原因定位为**宽节点（数字兄弟）线性扫描**（memeq 占 match 22%）；
+2. 修复一：**首字节分派表**（httprouter 同款思想）——权重排序时对 ≥4 子节点且
+   首字节互异的节点一次性构建 [256]int32 索引，匹配 O(1) 跳转；
+3. 修复二：顺带发现**注册性能 bug**——旧实现每次 Mount 全树 sortByWeight
+   （5000 路由注册 O(N² log N) 数秒），改为首次请求 sync.Once 惰性排序；
+4. 结果（stdlib 同引擎）：规模化 200/1000/5000 **静态全反超 22-37%、参数全打平
+   或反超**，且 web 随规模保持平坦（59.6→70.6ns）；gk 13 场景对 gin 收窄至
+   **9 胜 1 平 3 负（负项 ≤16ns）**；5 参数 172.9 vs 159.1（14ns，剩余为输入
+   构造链的固定成本，本地基准反超）；NotFound 反超（34.7 vs 47.2）。
+
+### M14 生产化第 5 轮：matcher 重写，Param5 收口（工作区，待审阅）
+
+- 路由 match 重写为路径直走：静态子节点用"前缀+边界字符"直接判定，消除旧实现
+  每段一次的 IndexByte 段尾扫描（profile：match+nextSeg 占 37.5%）；
+  参数/catch-all 才扫段界；radix 段内分裂由"边界未到继续深入"自然表达；
+- 结果（gk 13 场景体系，同工同酬）：对 gin 8 胜 3 极小负项（全部 ≤20ns）——
+  静态 +23%、通配符 +21%、JSON 绑定 +68%、JSON 响应 +44%、中间件 +25%、
+  全链路 +57%、Query +6%、Param1 +4%；Param5 打平（本地基准反超 5%）、
+  Scale200 慢 11%（10ns）、NotFound 慢 5.5ns；对 ghttp 保持全胜；
+- 正确性保障：全部路由语义测试 + race + 20s 模糊测试（1.7M 执行）通过。
+
+### M12 生产化第 3 轮：WebSocket/SSE 补全 + 生产设施（工作区，待审阅）
+
+- WebSocket（采纳 gorilla/websocket v1.5.3）：升级是输入契约（`WSConn`/
+  `UpgradeWS(u)`），"升级后不写响应"是输出契约（`Upgraded[O]()`）；Ctx 增加
+  hijacked 标记，升级后框架不再触碰响应流与错误管道；升级失败走正常错误管道
+  （400）；echo 端到端实测通过；
+- SSE 补全：`SSEEvent.ID/Retry`、`SSEWriter.Comment`（id/retry/注释字段）；
+- 生产设施：`app.Serve(addr)` 信号优雅停机（10s 排空）、`PProf()` pprof 路由组
+  （尾斜杠与深层路径双路由，`app.Must(web.PProf()...)`）。
+
+### M13 生产化第 4 轮：可信代理/文件输出/测试体系起步（工作区，待审阅）
+
+- `TrustedProxies(cidrs...)`（参照 ghttp trust.go）：仅受信 CIDR 内的直连对端
+  才接受 X-Forwarded-For/X-Real-IP，XFF 从右向左跳过受信跳；`Req.ClientIP()`
+  读取结果，无中间件时回退 RemoteAddr；
+- 文件输出：`Download(filename)`（Content-Disposition 附件）、
+  `StreamFile(ct)`（io.ReadSeeker 流式，先 Seek 后 io.Copy）；
+- `SPA(prefix, dir)`：存在即服务、缺失回退 index.html（根/非根前缀/深路由测试）；
+- problem+json 补 `instance` 字段；`Healthcheck()` 标准 /healthz 路由；
+- 测试体系起步：Go 原生模糊测试（路由 130 万次执行、提取器 33 万次，零 panic）；
+  覆盖率 82.8% → 84.1%；k6 压测与冒烟脚本留待全部设计完成后执行。
+
+### M10 生产化第 1 轮：链式构建器 + OpenAPI 自动反推（工作区，待审阅）
+
+- 链式构建器 `NewChain(app, in, out).GET(path).Doc(...).With(...).To(fn)`：
+  契约在起点声明、类型由描述器推断、方法链固定类型参数（<1.27 形态）；
+- `builder_go127.go`（`//go:build go1.27`）：1.27 泛型方法标准形态
+  `app.Route().GET(path).MustTo[I,O](in, out, fn)`——工具链 1.27.0 尚不可下载，
+  无法本地编译验证，已注明回退方案；验证流程改为仅 gofmt 实际参与构建的文件；
+- OpenAPI 文档选项 `Doc(Summary/Description/Tags/OperationID/Deprecated)`：
+  未声明字段自动反推（summary="METHOD path"、operationId 由 method+path 生成且
+  保留参数花括号防撞名）；演示见 demo `/v3/users/{id}`。
+
+### M11 生产化第 2 轮：路由/热路径优化 + 日志体系（工作区，待审阅）
+
+- 路由：静态子树权重排序（注册期静态优先级，运行期零变更、race 安全）；
+  Scale200 场景 28%→18% 差距；
+- 零分配错误路径：writeJSONErrorStatic 冻结头直写 → 404 场景 **0 alloc、
+  46.0ns 与 gin 打平**（原 80.6ns/1alloc）；
+- 日志体系分层定义：`LoggerSlog`（slog 结构化：method/path/有效状态码/时长/
+  request_id/错误）、`RecoverSlog`、`SecureHeaders`（基线安全头）、
+  `SlogContext`（类型键注入 logger）；全部测试覆盖；
+- 已知待优化：Param5 场景仍慢 gin 24%（参数提取链，文档化跟踪）。
+
 ### M9 gk 体系接入与跨框架排名（已完成）
 
 接入 gk 的 13 场景基准体系（`benchmarks/web_test.go`，同工同酬对齐 handler 语义）：
@@ -116,7 +217,7 @@ body 绑定与错误路径的优势是设计红利、与引擎无关；微基准
 
 ### M6 参考应用（已完成）
 
-`examples/tasks/`：完整参考应用，展示框架的最佳实践组合——
+`examples/tasks/`：唯一完整样例（demo 与 examples 已合并于此），覆盖渲染全景、表单/上传、SSE/WebSocket、静态/SPA、CRUD/鉴权/分页、OpenAPI、优雅停机——
 - 资源组 + 组中间件（Bearer 鉴权、类型键）；路由级中间件 `.With(requireAuth)`；
 - 分页/过滤（InFunc 显式校验）、path+body 组合更新（`All`）、状态机 409、
   204 删除、`BodyJSON` 校验钩子；

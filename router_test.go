@@ -67,7 +67,7 @@ func TestMatch(t *testing.T) {
 		{"/api/v2/health", "GET", []param{{"v", "v2"}}},
 	}
 	for _, tc := range cases {
-		nd, ps, ok := n.match("", tc.path, 1, nil)
+		nd, ps, ok := n.match(tc.path, 1, nil)
 		if !ok {
 			t.Errorf("match(%q): not found, want match", tc.path)
 			continue
@@ -80,14 +80,14 @@ func TestMatch(t *testing.T) {
 	}
 
 	for _, p := range []string{"/use", "/nope", "/users/42/nope", "/files", "/api/health"} {
-		nd, _, ok := n.match("", p, 1, nil)
+		nd, _, ok := n.match(p, 1, nil)
 		if ok && len(nd.leafHandlers) > 0 {
 			t.Errorf("match(%q): unexpectedly matched", p)
 		}
 	}
 
 	// 405-style: path exists, method does not.
-	nd, _, ok := n.match("", "/users/42", 1, nil)
+	nd, _, ok := n.match("/users/42", 1, nil)
 	if !ok || nd.handlerFor("DELETE") != nil {
 		t.Fatalf("match(/users/42): want node without DELETE handler")
 	}
@@ -100,19 +100,19 @@ func TestParamVsStaticPrefixSplit(t *testing.T) {
 		{"GET", "/users"},
 	})
 	// /us/123 matches the param route.
-	nd, ps, ok := n.match("", "/us/123", 1, nil)
+	nd, ps, ok := n.match("/us/123", 1, nil)
 	if !ok || nd.handlerFor("GET") == nil {
 		t.Fatalf("match(/us/123): want param route")
 	}
 	mustParams(t, ps, param{"x", "123"})
 	// /users matches the static route.
-	nd, _, ok = n.match("", "/users", 1, nil)
+	nd, _, ok = n.match("/users", 1, nil)
 	if !ok || nd.handlerFor("GET") == nil {
 		t.Fatalf("match(/users): want static route")
 	}
 	// /users/123 must NOT fall through to the {x} param: "users" is not a
 	// complete static match of "us", and params only match whole segments.
-	nd, _, ok = n.match("", "/users/123", 1, nil)
+	nd, _, ok = n.match("/users/123", 1, nil)
 	if ok && len(nd.leafHandlers) > 0 {
 		t.Fatalf("match(/users/123): must not match /us/{x}")
 	}
@@ -199,7 +199,7 @@ func TestSameNameParamMerges(t *testing.T) {
 		{"GET", "/a/{x}/c"},
 	})
 	for _, p := range []string{"/a/1/b", "/a/2/c"} {
-		nd, ps, ok := n.match("", p, 1, nil)
+		nd, ps, ok := n.match(p, 1, nil)
 		if !ok || nd.handlerFor("GET") == nil {
 			t.Fatalf("match(%q): want match", p)
 		}
@@ -210,7 +210,7 @@ func TestSameNameParamMerges(t *testing.T) {
 func TestTrailingSlashRequestMatchesRoute(t *testing.T) {
 	n := &node{}
 	insertRoutes(t, n, []struct{ method, path string }{{"GET", "/users"}})
-	nd, _, ok := n.match("", "/users/", 1, nil)
+	nd, _, ok := n.match("/users/", 1, nil)
 	if !ok || nd.handlerFor("GET") == nil {
 		t.Fatalf("match(/users/): want the /users node (trailing slash on request is tolerated)")
 	}

@@ -162,8 +162,14 @@ type Response struct {
 	Headers     map[string]*Header    `json:"headers,omitempty"`
 }
 
-// Operation is one method on one path.
+// Operation is one method on one path. Documentation fields are optional:
+// whatever the user does not declare is inferred from the route itself.
 type Operation struct {
+	Summary     string               `json:"summary,omitempty"`
+	Description string               `json:"description,omitempty"`
+	Tags        []string             `json:"tags,omitempty"`
+	OperationID string               `json:"operationId,omitempty"`
+	Deprecated  bool                 `json:"deprecated,omitempty"`
 	Parameters  []*Parameter         `json:"parameters,omitempty"`
 	RequestBody *RequestBody         `json:"requestBody,omitempty"`
 	Responses   map[string]*Response `json:"responses"`
@@ -195,6 +201,26 @@ func (a *App) Doc(info Info) OpenAPIDoc {
 			doc.Paths[r.path] = map[string]*Operation{}
 		}
 		op := &Operation{Responses: map[string]*Response{}}
+
+		// 文档字段：用户声明的优先；未声明的从路由自动反推
+		// （summary = "METHOD path"，operationId 由 method+path 生成）。
+		op.Summary = strings.ToUpper(r.method) + " " + r.path
+		op.OperationID = inferOperationID(r.method, r.path)
+		if r.doc != nil {
+			if r.doc.Summary != "" {
+				op.Summary = r.doc.Summary
+			}
+			if r.doc.Description != "" {
+				op.Description = r.doc.Description
+			}
+			if len(r.doc.Tags) > 0 {
+				op.Tags = r.doc.Tags
+			}
+			if r.doc.OperationID != "" {
+				op.OperationID = r.doc.OperationID
+			}
+			op.Deprecated = r.doc.Deprecated
+		}
 
 		if d, ok := r.inMeta.(Describe); ok {
 			m := d.Describe()

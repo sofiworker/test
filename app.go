@@ -36,6 +36,8 @@ type App struct {
 
 	problemJSON bool // RFC 7807 error envelope when enabled
 
+	sortOnce sync.Once // 首次请求时对路由树做一次性权重排序
+
 	ctxPool sync.Pool
 }
 
@@ -154,6 +156,8 @@ func (a *App) Handler() http.Handler { return a }
 
 // ServeHTTP implements http.Handler.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 权重排序惰性化：注册期 O(1)，首个请求一次性完成（O(N log N)）。
+	a.sortOnce.Do(func() { a.tree.sortByWeight() })
 	c := a.ctxPool.Get().(*Ctx)
 	ps := c.params[:0]
 	c.reset(w, r, ps)
@@ -163,7 +167,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(p) > 0 && p[0] == '/' {
 		pos = 1
 	}
-	n, nps, ok := a.tree.match("", p, pos, ps)
+	n, nps, ok := a.tree.match(p, pos, ps)
 	c.params = nps
 
 	var err error
@@ -187,10 +191,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err != nil {
+	if err != nil && !c.hijacked {
 		a.writeError(c, err)
 	}
-	if !c.wroteHeader {
+	if !c.wroteHeader && !c.hijacked {
 		c.WriteHeader(c.status)
 	}
 

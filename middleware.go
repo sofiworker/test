@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -234,4 +235,96 @@ func RateLimit(rps float64, burst int, key func(*Ctx) string) Middleware {
 type tokenBucket struct {
 	last   time.Time
 	tokens float64
+}
+
+// ---- 结构化日志与生产级中间件体系（第 4 点）----
+//
+// 分层约定：
+//   - 普通日志：Logger（log 包）/ LoggerSlog（slog 结构化，生产推荐）；
+//   - panic 恢复：Recover（log 包）/ RecoverSlog（slog）；
+//   - 请求身份：RequestID 写入类型键 + 响应头，LoggerSlog 可携带该键
+//     把 request_id 并入每条访问日志；
+//   - 基线安全头：SecureHeaders；
+//   - 其余电池（Timeout/BodyLimit/CORS/Compress/RateLimit/CacheControl）
+//     与本体系正交组合。
+
+// LoggerOpts tunes LoggerSlog.
+type LoggerOpts struct {
+	// RequestIDKey, when set, appends request_id to every access log line.
+	RequestIDKey Key[string]
+	// Skip suppresses logging for matching requests (e.g. health checks).
+	Skip func(*Ctx) bool
+}
+
+// LoggerSlog logs one structured record per request via stdlib slog:
+// method, path, effective status, duration, optional request_id and the
+// typed error. It is the production replacement for Logger.
+func LoggerSlog(l *slog.Logger, opts LoggerOpts) Middleware {
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			start := time.Now()
+			err := next(c)
+			if opts.Skip != nil && opts.Skip(c) {
+				return err
+			}
+			attrs := []slog.Attr{
+				slog.String("method", c.Method()),
+				slog.String("path", c.Path()),
+				slog.Int("status", statusCode(c, err)),
+				slog.Duration("dur", time.Since(start)),
+			}
+			if opts.RequestIDKey.name != "" {
+				if id, ok := opts.RequestIDKey.Get(c); ok {
+					attrs = append(attrs, slog.String("request_id", id))
+				}
+			}
+			if err != nil {
+				attrs = append(attrs, slog.Any("err", err))
+			}
+			l.LogAttrs(c.Context(), slog.LevelInfo, "http", attrs...)
+			return err
+		}
+	}
+}
+
+// RecoverSlog is Recover with structured panic reporting.
+func RecoverSlog(l *slog.Logger) Middleware {
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			defer func() {
+				if r := recover(); r != nil {
+					l.Error("panic", "panic", r, "stack", string(debug.Stack()), "method", c.Method(), "path", c.Path())
+					if !c.wroteHeader {
+						writeJSONError(c, 500, "internal server error")
+					}
+				}
+			}()
+			return next(c)
+		}
+	}
+}
+
+// SecureHeaders stamps the baseline security headers:
+// X-Content-Type-Options, X-Frame-Options, Referrer-Policy.
+func SecureHeaders() Middleware {
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			h := c.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			return next(c)
+		}
+	}
+}
+
+// SlogContext stores a *slog.Logger under a typed key so handlers can read
+// it through their input constructors (key.Get(r.Raw())).
+func SlogContext(key Key[*slog.Logger], l *slog.Logger) Middleware {
+	return func(next Handler) Handler {
+		return func(c *Ctx) error {
+			key.Set(c, l)
+			return next(c)
+		}
+	}
 }

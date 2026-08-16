@@ -67,8 +67,8 @@ func TestOpenAPIServedRoute(t *testing.T) {
 	app := web.New()
 	app.Must(web.GetJSON("/users/{id}", web.PathInt64("id"),
 		func(id int64) (*user, error) { return &user{ID: id}, nil }))
-	app.Must(web.GetJSON0("/openapi.json",
-		func() (web.OpenAPIDoc, error) {
+	app.Must(web.Handle(web.Get("/openapi.json"), web.NoIn(), web.JSON[web.OpenAPIDoc](),
+		func(web.None) (web.OpenAPIDoc, error) {
 			return app.Doc(web.Info{Title: "api", Version: "0.1.0"}), nil
 		}))
 

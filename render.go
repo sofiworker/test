@@ -1,7 +1,9 @@
 package web
 
 import (
+	"encoding/xml"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"reflect"
@@ -206,6 +208,15 @@ func (s *SSEWriter) flush() {
 // Event starts a named event; chain Data/Text/Retry on the returned value.
 func (s *SSEWriter) Event(name string) *SSEEvent { return &SSEEvent{w: s, name: name} }
 
+// Comment sends a comment line (": text").
+func (s *SSEWriter) Comment(text string) error {
+	if _, err := fmt.Fprintf(s.w, ": %s\n", text); err != nil {
+		return err
+	}
+	s.flush()
+	return nil
+}
+
 // Ping sends a keep-alive comment.
 func (s *SSEWriter) Ping() error {
 	if _, err := io.WriteString(s.w, ": ping\n\n"); err != nil {
@@ -217,8 +228,23 @@ func (s *SSEWriter) Ping() error {
 
 // SSEEvent is one server-sent event under construction.
 type SSEEvent struct {
-	w    *SSEWriter
-	name string
+	w     *SSEWriter
+	name  string
+	id    string
+	retry int
+}
+
+// ID sets the event id (emitted as an id: field).
+func (e *SSEEvent) ID(id string) *SSEEvent {
+	e.id = id
+	return e
+}
+
+// Retry sets the client reconnection delay in milliseconds (emitted as a
+// retry: field).
+func (e *SSEEvent) Retry(ms int) *SSEEvent {
+	e.retry = ms
+	return e
 }
 
 // Data sends v as JSON in a data: line and flushes.
@@ -237,6 +263,12 @@ func (e *SSEEvent) send(data string) error {
 	var buf strings.Builder
 	if e.name != "" {
 		fmt.Fprintf(&buf, "event: %s\n", e.name)
+	}
+	if e.id != "" {
+		fmt.Fprintf(&buf, "id: %s\n", e.id)
+	}
+	if e.retry > 0 {
+		fmt.Fprintf(&buf, "retry: %d\n", e.retry)
 	}
 	for _, line := range strings.Split(data, "\n") {
 		fmt.Fprintf(&buf, "data: %s\n", line)
@@ -288,6 +320,7 @@ func writeProblemError(c *Ctx, code int, detail string, fields map[string]any) {
 	if detail != "" {
 		m["detail"] = detail
 	}
+	m["instance"] = c.Path()
 	for k, v := range fields {
 		m[k] = v
 	}
@@ -320,6 +353,82 @@ func (c cookieRenderer[O]) SetHeader(h http.Header) {
 	h.Add("Set-Cookie", c.cookie.String())
 }
 
+// Download renders bytes as an attachment download with the given filename.
+func Download(filename string) Renderer[[]byte] { return downloadRenderer{name: filename} }
+
+type downloadRenderer struct{ name string }
+
+func (d downloadRenderer) ContentType() string { return "application/octet-stream" }
+func (d downloadRenderer) StatusCode() int     { return http.StatusOK }
+func (d downloadRenderer) SetHeader(h http.Header) {
+	h.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, d.name))
+}
+func (d downloadRenderer) WriteBody(w io.Writer, v []byte) error {
+	_, err := w.Write(v)
+	return err
+}
+
+// StreamFile streams an io.ReadSeeker (e.g. *os.File) with the given content
+// type, seeking to the start first.
+func StreamFile(ct string) Renderer[io.ReadSeeker] { return streamFileRenderer{ct: ct} }
+
+type streamFileRenderer struct{ ct string }
+
+func (s streamFileRenderer) ContentType() string { return s.ct }
+func (s streamFileRenderer) StatusCode() int     { return http.StatusOK }
+func (s streamFileRenderer) WriteBody(w io.Writer, v io.ReadSeeker) error {
+	if _, err := v.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	_, err := io.Copy(w, v)
+	return err
+}
+
+// XML renders T as XML with status 200.
+func XML[T any]() Renderer[T] { return xmlRenderer[T]{} }
+
+type xmlRenderer[T any] struct{}
+
+func (xmlRenderer[T]) ContentType() string { return "application/xml; charset=utf-8" }
+func (xmlRenderer[T]) StatusCode() int     { return http.StatusOK }
+func (xmlRenderer[T]) WriteBody(w io.Writer, v T) error {
+	b, err := xml.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(b)
+	return err
+}
+
+// HTML renders v through a text/template with the given name. The template
+// is user-owned: parsed once at registration, executed per request.
+func HTML[T any](t *template.Template, name string) Renderer[T] {
+	return htmlRenderer[T]{t: t, name: name}
+}
+
+type htmlRenderer[T any] struct {
+	t    *template.Template
+	name string
+}
+
+func (h htmlRenderer[T]) ContentType() string { return "text/html; charset=utf-8" }
+func (h htmlRenderer[T]) StatusCode() int     { return http.StatusOK }
+func (h htmlRenderer[T]) WriteBody(w io.Writer, v T) error {
+	return h.t.ExecuteTemplate(w, h.name, v)
+}
+
+// Bytes renders raw bytes with the given content type.
+func Bytes(ct string) Renderer[[]byte] { return bytesRenderer{ct: ct} }
+
+type bytesRenderer struct{ ct string }
+
+func (b bytesRenderer) ContentType() string { return b.ct }
+func (b bytesRenderer) StatusCode() int     { return http.StatusOK }
+func (b bytesRenderer) WriteBody(w io.Writer, v []byte) error {
+	_, err := w.Write(v)
+	return err
+}
+
 // Error response writers shared with middleware and the app.
 
 // errBodyCache reuses marshaled error bodies: the same (code, msg) pair
@@ -349,7 +458,7 @@ func writeJSONError(c *Ctx, code int, msg string) {
 // writeJSONErrorStatic writes a precomputed body: the hot 404/405 paths must
 // not allocate a fresh JSON document per request.
 func writeJSONErrorStatic(c *Ctx, code int, body []byte) {
-	c.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.Header()["Content-Type"] = ctJSON
 	c.WriteHeader(code)
 	_, _ = c.W.Write(body)
 }

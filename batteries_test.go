@@ -1,9 +1,11 @@
 package web_test
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -85,7 +87,7 @@ func TestCORSMiddleware(t *testing.T) {
 		AllowHeaders:  []string{"Content-Type"},
 		MaxAgeSeconds: 600,
 	})
-	app.Must(web.GetJSON0("/x", func() (*user, error) { return &user{ID: 1}, nil }))
+	app.Must(web.Handle(web.Get("/x"), web.NoIn(), web.JSON[*user](), func(web.None) (*user, error) { return &user{ID: 1}, nil }))
 
 	// 预检
 	req := httptest.NewRequest("OPTIONS", "/x", nil)
@@ -271,5 +273,92 @@ func TestNestedGroupAndAccessors(t *testing.T) {
 	route := web.GetJSON("/meta", web.NoIn(), func(web.None) (*user, error) { return nil, nil })
 	if route.Method() != "GET" || route.Path() != "/meta" {
 		t.Fatalf("%s %s", route.Method(), route.Path())
+	}
+}
+
+func TestLoggerSlogStructured(t *testing.T) {
+	var buf bytes.Buffer
+	h := slog.NewTextHandler(&buf, nil)
+	l := slog.New(h)
+	reqID := web.NewKey[string]("rid")
+	app := web.New()
+	app.Use(web.RequestID(reqID, web.NewID), web.LoggerSlog(l, web.LoggerOpts{RequestIDKey: reqID}))
+	app.Must(web.Handle(web.Get("/ok"), web.NoIn(), web.Text(), func(web.None) (string, error) { return "ok", nil }))
+	app.Must(web.Handle(web.Get("/bad"), web.NoIn(), web.Text(), func(web.None) (string, error) { return "", httperr.NotFound() }))
+	app.Must(web.Handle(web.Get("/skip"), web.NoIn(), web.Text(), func(web.None) (string, error) { return "ok", nil }))
+
+	do(t, app, "GET", "/ok")
+	do(t, app, "GET", "/bad")
+	logs := buf.String()
+	if !strings.Contains(logs, `method=GET`) || !strings.Contains(logs, `request_id=`) {
+		t.Fatalf("access log shape: %q", logs)
+	}
+	if !strings.Contains(logs, "status=404") {
+		t.Fatalf("effective status missing: %q", logs)
+	}
+}
+
+func TestLoggerSlogSkip(t *testing.T) {
+	var buf bytes.Buffer
+	l := slog.New(slog.NewTextHandler(&buf, nil))
+	app := web.New()
+	app.Use(web.LoggerSlog(l, web.LoggerOpts{
+		Skip: func(c *web.Ctx) bool { return c.Path() == "/healthz" },
+	}))
+	app.Must(web.Handle(web.Get("/healthz"), web.NoIn(), web.Text(), func(web.None) (string, error) { return "ok", nil }))
+	app.Must(web.Handle(web.Get("/x"), web.NoIn(), web.Text(), func(web.None) (string, error) { return "ok", nil }))
+	do(t, app, "GET", "/healthz")
+	do(t, app, "GET", "/x")
+	logs := buf.String()
+	if strings.Contains(logs, "/healthz") {
+		t.Fatalf("healthz should be skipped: %q", logs)
+	}
+	if !strings.Contains(logs, "/x") {
+		t.Fatalf("x should be logged: %q", logs)
+	}
+}
+
+func TestRecoverSlog(t *testing.T) {
+	var buf bytes.Buffer
+	l := slog.New(slog.NewTextHandler(&buf, nil))
+	app := web.New()
+	app.Use(web.RecoverSlog(l))
+	app.Must(web.Handle(web.Get("/panic"), web.NoIn(), web.Text(), func(web.None) (string, error) { panic("boom") }))
+	rec := do(t, app, "GET", "/panic")
+	if rec.Code != 500 || !strings.Contains(buf.String(), "boom") {
+		t.Fatalf("%d %q", rec.Code, buf.String())
+	}
+}
+
+func TestSecureHeaders(t *testing.T) {
+	app := web.New()
+	app.Use(web.SecureHeaders())
+	app.Must(web.Handle(web.Get("/x"), web.NoIn(), web.Text(), func(web.None) (string, error) { return "ok", nil }))
+	rec := do(t, app, "GET", "/x")
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" ||
+		rec.Header().Get("X-Frame-Options") != "DENY" ||
+		rec.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("%v", rec.Header())
+	}
+}
+
+func TestSlogContextMiddleware(t *testing.T) {
+	logKey := web.NewKey[*slog.Logger]("logger")
+	l := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app := web.New()
+	app.Use(web.SlogContext(logKey, l))
+	type in struct{ hasLog bool }
+	desc := web.InFunc(func(r web.Req) (in, error) {
+		_, ok := logKey.Get(r.Raw())
+		return in{hasLog: ok}, nil
+	})
+	app.Must(web.GetText("/x", desc, func(v in) (string, error) {
+		if !v.hasLog {
+			return "missing", nil
+		}
+		return "has", nil
+	}))
+	if body(t, do(t, app, "GET", "/x")) != "has" {
+		t.Fatalf("logger not injected")
 	}
 }
