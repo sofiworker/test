@@ -112,3 +112,18 @@ func BenchmarkGinFiveMW(b *testing.B) { bench(b, newGinApp(true), "/hello") }
 
 func BenchmarkWebNotFound(b *testing.B) { bench(b, newWebApp(false), "/nope") }
 func BenchmarkGinNotFound(b *testing.B) { bench(b, newGinApp(false), "/nope") }
+
+// 两档执行路径：糖入口（特化直编）vs 通用 Handle+Renderer（接口分派）。
+func BenchmarkWebStaticTextHandle(b *testing.B) {
+	app := web.New()
+	app.Must(web.Handle(web.Get("/hello"), web.NoIn(), web.Text(),
+		func(web.None) (string, error) { return "Hello, World!", nil }))
+	bench(b, app, "/hello")
+}
+
+func BenchmarkWebStaticJSONHandle(b *testing.B) {
+	app := web.New()
+	app.Must(web.Handle(web.Get("/json"), web.NoIn(), web.JSON[*payload](),
+		func(web.None) (*payload, error) { return payloadVal, nil }))
+	bench(b, app, "/json")
+}

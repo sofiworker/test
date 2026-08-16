@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"html/template"
@@ -24,6 +25,22 @@ type headerSetter interface {
 	SetHeader(h http.Header)
 }
 
+// preparer is implemented by built-in serializing renderers. Prepare runs
+// BEFORE any response header is committed — a serialization failure flows
+// through the error pipeline (500) instead of producing a 200 with an empty
+// body — and it is STATELESS: it returns the bytes instead of caching them,
+// because renderer instances are shared across concurrent requests.
+// Streaming renderers (SSE, Stream) cannot prepare; their failures are
+// inherently mid-stream.
+type preparer interface {
+	Prepare(v any) ([]byte, error)
+}
+
+// preparedBody writes bytes already serialized by Prepare.
+type preparedBody interface {
+	WritePrepared(w io.Writer, b []byte) error
+}
+
 // render writes o through rd. All calls are direct; o is never boxed outside
 // the renderer itself.
 func render[O any](c *Ctx, o O, rd Renderer[O]) error {
@@ -31,14 +48,27 @@ func render[O any](c *Ctx, o O, rd Renderer[O]) error {
 		hs.SetHeader(c.Header())
 	}
 	if ct := rd.ContentType(); ct != "" {
-		c.Header().Set("Content-Type", ct)
+		setCT(c.Header(), ct)
+	}
+	var prepared []byte
+	if p, ok := any(rd).(preparer); ok {
+		b, err := p.Prepare(o)
+		if err != nil {
+			return err
+		}
+		prepared = b
 	}
 	c.WriteHeader(rd.StatusCode())
+	if prepared != nil {
+		if pw, ok := any(rd).(preparedBody); ok {
+			return pw.WritePrepared(c.W, prepared)
+		}
+	}
 	return rd.WriteBody(c.W, o)
 }
 
 // JSON renders T as JSON with status 200.
-func JSON[T any]() Renderer[T] { return jsonRenderer[T]{} }
+func JSON[T any]() Renderer[T] { return &jsonRenderer[T]{} }
 
 type jsonRenderer[T any] struct{}
 
@@ -46,6 +76,11 @@ func (jsonRenderer[T]) ContentType() string { return "application/json; charset=
 func (jsonRenderer[T]) StatusCode() int     { return http.StatusOK }
 func (jsonRenderer[T]) ResponseSchema() *Schema {
 	return schemaOfType(reflect.TypeOf((*T)(nil)).Elem())
+}
+func (jsonRenderer[T]) Prepare(v any) ([]byte, error) { return jsonMarshal(v) }
+func (jsonRenderer[T]) WritePrepared(w io.Writer, b []byte) error {
+	_, err := w.Write(b)
+	return err
 }
 func (jsonRenderer[T]) WriteBody(w io.Writer, v T) error {
 	b, err := jsonMarshal(v)
@@ -83,6 +118,18 @@ func (r statusRenderer[O]) ContentType() string { return r.inner.ContentType() }
 func (r statusRenderer[O]) StatusCode() int     { return r.code }
 func (r statusRenderer[O]) WriteBody(w io.Writer, v O) error {
 	return r.inner.WriteBody(w, v)
+}
+func (r statusRenderer[O]) Prepare(v any) ([]byte, error) {
+	if p, ok := any(r.inner).(preparer); ok {
+		return p.Prepare(v)
+	}
+	return nil, nil
+}
+func (r statusRenderer[O]) WritePrepared(w io.Writer, b []byte) error {
+	if pw, ok := any(r.inner).(preparedBody); ok {
+		return pw.WritePrepared(w, b)
+	}
+	return nil
 }
 
 // NoContent answers with an empty 204 regardless of the value.
@@ -281,13 +328,12 @@ func (e *SSEEvent) send(data string) error {
 	return nil
 }
 
-// 冻结的内容类型切片：热路径直接写入头 map，跳过 Set 的键校验与规范化
-// （profile 显示这是框架侧最大单点开销）。切片是共享的：替换条目可以，
-// 原地修改不行。
-var (
-	ctJSON = []string{"application/json; charset=utf-8"}
-	ctText = []string{"text/plain; charset=utf-8"}
-)
+// setCT 写入每响应独立的内容类型切片：共享切片会让中间件对 [0] 的
+// 原地修改污染所有后续请求（真实数据竞争，已被外部测试复现）。
+// 直接写 map 仍跳过 Set 的键校验与规范化，只付一次小分配。
+func setCT(h http.Header, v string) {
+	h["Content-Type"] = []string{v}
+}
 
 // writeJSON is the direct JSON path: codec marshal + frozen header + write.
 func writeJSON(c *Ctx, v any) error {
@@ -295,7 +341,7 @@ func writeJSON(c *Ctx, v any) error {
 	if err != nil {
 		return err
 	}
-	c.Header()["Content-Type"] = ctJSON
+	setCT(c.Header(), "application/json; charset=utf-8")
 	c.WriteHeader(c.status)
 	_, err = c.W.Write(b)
 	return err
@@ -303,7 +349,7 @@ func writeJSON(c *Ctx, v any) error {
 
 // writeText is the direct text path: no renderer interface, no Set.
 func writeText(c *Ctx, s string) error {
-	c.Header()["Content-Type"] = ctText
+	setCT(c.Header(), "text/plain; charset=utf-8")
 	c.WriteHeader(http.StatusOK)
 	_, err := io.WriteString(c.W, s)
 	return err
@@ -325,7 +371,7 @@ func writeProblemError(c *Ctx, code int, detail string, fields map[string]any) {
 		m[k] = v
 	}
 	b, _ := jsonMarshal(m)
-	c.Header()["Content-Type"] = ctJSON
+	setCT(c.Header(), "application/json; charset=utf-8")
 	c.WriteHeader(code)
 	_, _ = c.W.Write(b)
 }
@@ -385,12 +431,17 @@ func (s streamFileRenderer) WriteBody(w io.Writer, v io.ReadSeeker) error {
 }
 
 // XML renders T as XML with status 200.
-func XML[T any]() Renderer[T] { return xmlRenderer[T]{} }
+func XML[T any]() Renderer[T] { return &xmlRenderer[T]{} }
 
 type xmlRenderer[T any] struct{}
 
-func (xmlRenderer[T]) ContentType() string { return "application/xml; charset=utf-8" }
-func (xmlRenderer[T]) StatusCode() int     { return http.StatusOK }
+func (xmlRenderer[T]) ContentType() string           { return "application/xml; charset=utf-8" }
+func (xmlRenderer[T]) StatusCode() int               { return http.StatusOK }
+func (xmlRenderer[T]) Prepare(v any) ([]byte, error) { return xml.Marshal(v) }
+func (xmlRenderer[T]) WritePrepared(w io.Writer, b []byte) error {
+	_, err := w.Write(b)
+	return err
+}
 func (xmlRenderer[T]) WriteBody(w io.Writer, v T) error {
 	b, err := xml.Marshal(v)
 	if err != nil {
@@ -403,7 +454,7 @@ func (xmlRenderer[T]) WriteBody(w io.Writer, v T) error {
 // HTML renders v through a text/template with the given name. The template
 // is user-owned: parsed once at registration, executed per request.
 func HTML[T any](t *template.Template, name string) Renderer[T] {
-	return htmlRenderer[T]{t: t, name: name}
+	return &htmlRenderer[T]{t: t, name: name}
 }
 
 type htmlRenderer[T any] struct {
@@ -413,6 +464,17 @@ type htmlRenderer[T any] struct {
 
 func (h htmlRenderer[T]) ContentType() string { return "text/html; charset=utf-8" }
 func (h htmlRenderer[T]) StatusCode() int     { return http.StatusOK }
+func (h htmlRenderer[T]) Prepare(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := h.t.ExecuteTemplate(&buf, h.name, v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+func (h htmlRenderer[T]) WritePrepared(w io.Writer, b []byte) error {
+	_, err := w.Write(b)
+	return err
+}
 func (h htmlRenderer[T]) WriteBody(w io.Writer, v T) error {
 	return h.t.ExecuteTemplate(w, h.name, v)
 }
@@ -450,7 +512,7 @@ func writeJSONError(c *Ctx, code int, msg string) {
 		b, _ = jsonMarshal(map[string]string{"error": msg})
 		errBodyCache.Store(key, b)
 	}
-	c.Header()["Content-Type"] = ctJSON
+	setCT(c.Header(), "application/json; charset=utf-8")
 	c.WriteHeader(code)
 	_, _ = c.W.Write(b)
 }
@@ -458,7 +520,7 @@ func writeJSONError(c *Ctx, code int, msg string) {
 // writeJSONErrorStatic writes a precomputed body: the hot 404/405 paths must
 // not allocate a fresh JSON document per request.
 func writeJSONErrorStatic(c *Ctx, code int, body []byte) {
-	c.Header()["Content-Type"] = ctJSON
+	setCT(c.Header(), "application/json; charset=utf-8")
 	c.WriteHeader(code)
 	_, _ = c.W.Write(body)
 }

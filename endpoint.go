@@ -510,7 +510,7 @@ func jsonRoute[I, O any](method, path string, in In[I], fn func(I) (O, error), c
 		if err != nil {
 			return err
 		}
-		c.Header()["Content-Type"] = ctJSON
+		setCT(c.Header(), "application/json; charset=utf-8")
 		c.WriteHeader(code)
 		_, err = c.W.Write(b)
 		return err

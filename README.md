@@ -51,6 +51,7 @@ app.Must(web.Handle(
 | 万能输入 | `web.InFunc(func(r web.Req) (I, error))` —— 任意组合、任意参数个数，100 参数=一个结构体 |
 | 输入组合 | `web.All(a, b)` → `In[Pair[A,B]]`、`All3` → `Triple`；**`MapIn(a, b, f)` / `MapIn3` → 自定义命名结构体**（推荐）；错误短路 |
 | 输出契约 | `JSON[T]() / Text() / XML[T]() / HTML[T](tmpl, name) / Bytes(ct) / Status(...) / NoContent / Redirect / SSE / Stream / Download / StreamFile` + 自定义 `Renderer[O]` |
+| 序列化语义 | 内置序列化渲染器在**提交响应头之前**完成序列化（Prepare 阶段，无状态、并发安全）：序列化失败统一走 500 错误管道，糖入口与通用 Handle 语义一致 |
 | 表单输入 | `web.FormValues()`：urlencoded → `url.Values`（显式映射，零反射零 tag） |
 | 静态文件 | `web.Static(prefix, dir)`、`web.SPA(prefix, dir)`（index.html 回退） |
 | 路由文档 | `route.Doc(Summary/Description/Tags/OperationID/Deprecated)`：声明优先、未声明自动反推 |
@@ -97,6 +98,10 @@ app.Must(web.Handle(
 profile 驱动优化：冻结响应头切片（跳过 Set 规范化）、糖入口直编闭包（跳过渲染器
 接口分派）、叶节点切片分派（跳过 map 查找）、参数切片随 Ctx 单池。
 分配预算由 `alloc_test.go` 作为 CI 硬约束（文本 ≤1、参数 ≤1、JSON ≤3）。
+
+执行路径说明：糖入口（GetJSON/GetText 等）与通用 Handle+Renderer 共享同一
+render 管线，差异仅为一次接口分派（实测同量级：文本 66.3 vs 64.7ns、
+JSON 182.9 vs 182.1ns）；响应头按每响应独立切片写入（不共享可变状态）。
 
 ### 真实端点对照（examples/tasks 同语义，双方惯用写法 + 各自默认引擎）
 
